@@ -35,6 +35,8 @@ classifiers = [
 
 [project.optional-dependencies]
 test = ["pytest"]
+
+[tool.pytest.ini_options]
 testpaths = ["test"]
 
 [tool.setuptools.packages.find]
