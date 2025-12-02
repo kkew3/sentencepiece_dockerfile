@@ -82,7 +82,7 @@ jobs:
       - name: Build sdist archive
         working-directory: python
         run: |
-          python -m build --sdist
+          sh build_sdist.sh
 
       - name: Fetch sdist archive
         uses: tj-actions/glob@2deae40528141fc53131606d56b4e4ce2a486b29 # v22.0.2
