@@ -99,6 +99,9 @@ class build_ext(_build_ext):
     # See: https://github.com/neulab/xnmt/issues/199
     if sys.platform == 'darwin':
       cflags.append('-mmacosx-version-min=10.9')
+      # get correct SDK path by xcrun
+      sdk_path = subprocess.check_output(['xcrun', '--show-sdk-path']).decode().strip()
+      libs.extend(['-stdlib=libc++', f'-isysroot{sdk_path}'])
     else:
       if sys.platform == 'aix':
         cflags.append('-Wl,-s')
