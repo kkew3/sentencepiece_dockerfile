@@ -27,14 +27,15 @@ To build and install the Python wrapper from source, try the following commands 
 % cmake .. -DSPM_ENABLE_SHARED=OFF -DCMAKE_INSTALL_PREFIX=./root -DSPM_DISABLE_EMBEDDED_DATA=ON
 % make install
 % cd ../python
-% python setup.py bdist_wheel
+% pip install build
+% python -m build --wheel
 % pip install dist/sentencepiece*.whl
 ```
 
 If you don’t have write permission to the global site-packages directory or don’t want to install into it, please try:
 
 ```
-% python setup.py install --user
+% pip install --user dist/sentencepiece*.whl
 ```
 
 For Windows users who want to build from source, you can build and install the Python wrapper using Visual Studio. First, you need to install the `pwsh.exe` (Powershell 7). Use `winget install --id Microsoft.Powershell --source winget` to install directly. Then open the `Developer PowerShell for VS 2022`, and execute the following commands.
@@ -47,8 +48,8 @@ cd build
 cmake .. -DSPM_ENABLE_SHARED=OFF -DCMAKE_INSTALL_PREFIX=".\root" -DSPM_DISABLE_EMBEDDED_DATA=ON
 cmake --build . --config Release --target install
 cd ../python
-pip install wheel
-python setup.py bdist_wheel
+pip install build
+python -m build --wheel
 Get-ChildItem .\dist\sentencepiece*.whl | ForEach-Object { pip install $_.FullName }
 ```
 
