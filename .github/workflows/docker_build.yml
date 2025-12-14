@@ -1,0 +1,38 @@
+name: Docker build and run container test
+
+on:
+  push:
+    paths:
+      - 'contrib/docker/Dockerfile'
+  pull_request:
+    paths:
+      - 'contrib/docker/Dockerfile'
+  schedule:
+    - cron: '23 17 4,18 * *'
+  workflow_dispatch:
+
+jobs:
+  docker-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      # Check <https://github.com/docker/setup-buildx-action>.
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+      - name: Set up docker buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build docker image
+        run: docker build -t sentencepiece -f contrib/docker/Dockerfile .
+      
+      - name: Test running container
+        run: |
+          echo '== spm_train =='
+          docker run --rm sentencepiece spm_train --help
+          echo ''
+          echo '== spm_encode =='
+          docker run --rm sentencepiece spm_encode --help
+          echo ''
+          echo '== spm_decode =='
+          docker run --rm sentencepiece spm_decode --help
