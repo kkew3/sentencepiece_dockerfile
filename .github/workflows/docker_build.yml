@@ -29,10 +29,10 @@ jobs:
       - name: Test running container
         run: |
           echo '== spm_train =='
-          docker run --rm sentencepiece spm_train --help
+          timeout 1m docker run --rm sentencepiece spm_train --help
           echo ''
           echo '== spm_encode =='
-          docker run --rm sentencepiece spm_encode --help
+          timeout 1m docker run --rm sentencepiece spm_encode --help
           echo ''
           echo '== spm_decode =='
-          docker run --rm sentencepiece spm_decode --help
+          timeout 1m docker run --rm sentencepiece spm_decode --help
