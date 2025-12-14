@@ -26,13 +26,21 @@ jobs:
       - name: Build docker image
         run: docker build -t sentencepiece -f contrib/docker/Dockerfile .
       
-      - name: Test running container
+      - name: 'Test running container (print version)'
         run: |
-          echo '== spm_train =='
-          timeout 1m docker run --rm sentencepiece spm_train --help
-          echo ''
-          echo '== spm_encode =='
-          timeout 1m docker run --rm sentencepiece spm_encode --help
-          echo ''
-          echo '== spm_decode =='
-          timeout 1m docker run --rm sentencepiece spm_decode --help
+          timeout 1m docker run --rm sentencepiece spm_train --version
+          timeout 1m docker run --rm sentencepiece spm_encode --version
+          timeout 1m docker run --rm sentencepiece spm_decode --version
+      - name: 'Test running container (trivial training)'
+        run: |
+          cd "$(mktemp -d tmp.XXXXXX)"
+          echo 'a cat sat on a mat' > train.txt
+          echo 'a mat is sat by a cat' >> train.txt
+          echo 'cat cat cat' >> train.txt
+          echo 'sat sat sat' >> train.txt
+          echo 'mat mat mat' >> train.txt
+          echo 'cat sat mat' >> train.txt
+          timeout 1m docker run --rm -v "$(pwd):/data" sentencepiece spm_train --input /data/train.txt --model_prefix /data/m --vocab_size 30 --model_type bpe
+          grep cat m.vocab
+          grep sat m.vocab
+          grep mat m.vocab
