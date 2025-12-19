@@ -11,6 +11,5 @@ jobs:
     steps:
       - uses: tgymnich/fork-sync@v1.8
         with:
-          merge_method: rebase
           base: master
           head: master
