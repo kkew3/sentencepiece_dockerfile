@@ -297,6 +297,8 @@ class DoubleArrayImpl {
   inline value_type traverse(const key_type *key, std::size_t &node_pos,
       std::size_t &key_pos, std::size_t length = 0) const;
 
+  bool validate() const;
+
  private:
   typedef Details::uchar_type uchar_type;
   typedef Details::id_type id_type;
@@ -428,6 +430,30 @@ int DoubleArrayImpl<A, B, T, C>::save(const char *file_name,
   }
   std::fclose(file);
   return 0;
+}
+
+template <typename A, typename B, typename T, typename C>
+bool DoubleArrayImpl<A, B, T, C>::validate() const {
+  if (size_ == 0) {
+    return true;
+  }
+  for (std::size_t i = 0; i < size_; ++i) {
+    // Leaf/value units store data in the offset field, not child pointers.
+    // label() has MSB set (> 0xFF) for these units. Skip them, matching
+    // the same pattern used in open().
+    if (array_[i].label() > 0xFF) {
+      continue;
+    }
+    const id_type offset = array_[i].offset();
+    if (offset == 0) {
+      continue;
+    }
+    const std::size_t base = i ^ offset;
+    if ((base | 0xFF) >= size_) {
+      return false;
+    }
+  }
+  return true;
 }
 
 template <typename A, typename B, typename T, typename C>

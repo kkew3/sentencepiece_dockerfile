@@ -16,27 +16,20 @@
 
 #include <atomic>
 #include <cstddef>
-#include <iostream>
 #include <memory>
+
+#include "third_party/absl/random/random.h"
 
 namespace sentencepiece {
 
 namespace {
-constexpr uint32_t kDefaultSeed = static_cast<uint32_t>(-1);
+static constexpr uint32_t kDefaultSeed = static_cast<uint32_t>(-1);
 static std::atomic<uint32_t> g_seed = kDefaultSeed;
 }  // namespace
 
-void SetRandomGeneratorSeed(uint32_t seed) {
-  if (seed != kDefaultSeed) g_seed.store(seed);
-}
+void SetRandomGeneratorSeed(uint32_t seed) { g_seed.store(seed); }
 
-uint32_t GetRandomGeneratorSeed() {
-  try {
-    return g_seed == kDefaultSeed ? std::random_device{}() : g_seed.load();
-  } catch (...) {
-    return g_seed.load();
-  }
-}
+uint32_t GetRandomGeneratorSeed() { return g_seed.load(); }
 
 namespace {
 std::shared_ptr<const std::string> *GetSharedDataDir() {
@@ -175,18 +168,14 @@ std::string UnicodeTextToUTF8(const UnicodeText &utext) {
 }  // namespace string_util
 
 namespace random {
-std::mt19937 *GetRandomGenerator() {
+absl::BitGen *GetRandomGenerator() {
   // Thread-locals occupy stack space in every thread ever created by the
   // program, even if that thread never uses the thread-local variable.
-  //
-  // https://maskray.me/blog/2021-02-14-all-about-thread-local-storage
-  //
-  // sizeof(std::mt19937) is several kilobytes, so it is safer to put that on
-  // the heap, leaving only a pointer to it in thread-local storage.  This must
-  // be a unique_ptr, not a raw pointer, so that the generator is not leaked on
-  // thread exit.
   thread_local static auto mt =
-      std::make_unique<std::mt19937>(GetRandomGeneratorSeed());
+      GetRandomGeneratorSeed() == kDefaultSeed
+          ? std::make_unique<absl::BitGen>()
+          : std::make_unique<absl::BitGen>(
+                std::seed_seq{GetRandomGeneratorSeed()});
   return mt.get();
 }
 }  // namespace random
@@ -206,9 +195,7 @@ std::string StrError(int errnum) {
   strerror_r(errnum, buffer, kStrErrorSize - 1);
   str = buffer;
 #endif
-  std::ostringstream os;
-  os << str << " Error #" << errnum;
-  return os.str();
+  return absl::StrCat(str, " Error #", errnum);
 }
 
 std::vector<std::string> StrSplitAsCSV(absl::string_view text) {

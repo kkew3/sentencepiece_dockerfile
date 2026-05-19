@@ -292,12 +292,6 @@ inline void InitNumThreads(const std::vector<T> &ins, int *num_threads) {
 }  // namespace
 %}
 
-%init %{
-#ifdef Py_GIL_DISABLED
-  PyUnstable_Module_SetGIL(m, Py_MOD_GIL_NOT_USED);
-#endif
-%}
-
 %exception {
   try {
     $action

@@ -20,6 +20,7 @@
 #include "third_party/absl/flags/parse.h"
 #include "third_party/absl/flags/usage.h"
 #include "third_party/absl/flags/usage_config.h"
+#include "third_party/absl/log/initialize.h"
 #include "third_party/absl/strings/str_cat.h"
 #include "util.h"
 
@@ -34,6 +35,8 @@ ABSL_FLAG(bool, quiet, false, "Suppress logging message.");
 namespace sentencepiece {
 void ParseCommandLineFlags(const char *usage, int *argc, char ***argv,
                            bool remove_arg) {
+  absl::InitializeLog();
+  absl::SetStderrThreshold(absl::LogSeverityAtLeast::kInfo);
   absl::SetProgramUsageMessage(absl::StrCat(PACKAGE_STRING, " ", VERSION,
                                             "\n\n", "Usage: ", *argv[0],
                                             " [options] files"));

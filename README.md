@@ -80,7 +80,7 @@ following three tokens.
 > [Hello] [World] [.]
 
 One observation is that the original input and tokenized sequence are **NOT
-reversibly convertible**. For instance, the information that is no space between
+reversibly convertible**. For instance, the information that there is no space between
 “World” and “.” is dropped from the tokenized sequence, since e.g., `Tokenize(“World.”) == Tokenize(“World .”)`
 
 SentencePiece treats the input text just as a sequence of Unicode characters. Whitespace is also handled as a normal symbol. To handle the whitespace as a basic token explicitly, SentencePiece first escapes the whitespace with a meta symbol "▁" (U+2581) as follows.

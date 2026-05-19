@@ -73,7 +73,7 @@ TEST(TrainerInterfaceTest, IsValidSentencePieceTest) {
   EXPECT_FALSE(IsValid("F1"));
   EXPECT_FALSE(IsValid("1F"));
   EXPECT_FALSE(IsValid("1A2"));
-  EXPECT_TRUE(IsValid("$10"));      // $ and 1 are both "common" script.
+  EXPECT_TRUE(IsValid("$10"));  // $ and 1 are both "common" script.
   EXPECT_FALSE(IsValid("$ABC"));
   EXPECT_FALSE(IsValid("ab\tbc"));  // "\t" is UPP boundary.
   EXPECT_FALSE(IsValid("ab cd"));
@@ -492,8 +492,7 @@ TEST(TrainerInterfaceTest, SerializeTest) {
 }
 
 TEST(TrainerInterfaceTest, CharactersTest) {
-  const std::string input_file =
-      util::JoinPath(::testing::TempDir(), "input");
+  const std::string input_file = util::JoinPath(::testing::TempDir(), "input");
   {
     auto output = filesystem::NewWritableFile(input_file);
     // Make a single line with 50 "a", 49 "あ", and 1 "b".
@@ -559,8 +558,8 @@ TEST(TrainerInterfaceTest, MultiFileSentenceIteratorTest) {
   std::vector<std::string> files;
   std::vector<std::string> expected;
   for (int i = 0; i < 10; ++i) {
-    const std::string file = util::JoinPath(::testing::TempDir(),
-                                            absl::StrCat("input", i));
+    const std::string file =
+        util::JoinPath(::testing::TempDir(), absl::StrCat("input", i));
     auto output = filesystem::NewWritableFile(file);
     int num_line = (rand() % 100) + 1;
     for (int n = 0; n < num_line; ++n) {

@@ -75,3 +75,5 @@ _sentencepiece.*.so
 third_party/abseil-cpp
 
 python/sentencepiece
+
+third_party/absl

@@ -127,11 +127,12 @@ struct BinaryBlob {
   os << kHeader;
 
   os << "#if defined(_WIN32) && !defined(__CYGWIN__)\n";
-  os << "constexpr unsigned long long int kNormalizationRules_blob_uint64_t[] = "
+  os << "constexpr unsigned long long int kNormalizationRules_blob_uint64_t[] "
+        "= "
         "{\n";
   std::vector<size_t> offset;
   os << ToHexUInt64Array(data, &offset);
-  CHECK_EQ(offset.size(), data.size());
+  QCHECK_EQ(offset.size(), data.size());
   os << "};\n\n";
   os << "const BinaryBlob kNormalizationRules_blob[] = {\n";
   for (size_t i = 0; i < data.size(); ++i) {
@@ -179,14 +180,15 @@ int main(int argc, char **argv) {
   std::vector<std::pair<std::string, std::string>> data;
   for (const auto &[name, func] : kRuleList) {
     Builder::CharsMap normalized_map;
-    CHECK_OK(func(&normalized_map));
+    QCHECK_OK(func(&normalized_map));
 
     // Write Header.
     std::string index;
-    CHECK_OK(Builder::CompileCharsMap(normalized_map, &index));
+    QCHECK_OK(Builder::CompileCharsMap(normalized_map, &index));
 
     // Write TSV file.
-    CHECK_OK(Builder::SaveCharsMap(absl::StrCat(name, ".tsv"), normalized_map));
+    QCHECK_OK(
+        Builder::SaveCharsMap(absl::StrCat(name, ".tsv"), normalized_map));
 
     // Do not make NFKD map as it is optionally created.
     if (name == "nfkd" || name == "nfd" || name == "nfc" || name == "nfkd_cf" ||
@@ -201,7 +203,7 @@ int main(int argc, char **argv) {
     constexpr char kPrecompiledHeaderFileName[] = "normalization_rule.h";
     auto output =
         sentencepiece::filesystem::NewWritableFile(kPrecompiledHeaderFileName);
-    CHECK_OK(output->status());
+    QCHECK_OK(output->status());
     output->Write(sentencepiece::MakeHeader(data));
   }
 

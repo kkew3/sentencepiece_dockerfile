@@ -25,40 +25,15 @@ namespace {
 constexpr int kMaxUnicode = 0x10FFFF;
 }
 
-TEST(UtilTest, LexicalCastTest) {
-  bool b = false;
-  EXPECT_TRUE(string_util::lexical_cast<bool>("true", &b));
-  EXPECT_TRUE(b);
-  EXPECT_TRUE(string_util::lexical_cast<bool>("false", &b));
-  EXPECT_FALSE(b);
-  EXPECT_FALSE(string_util::lexical_cast<bool>("UNK", &b));
-
-  int32_t n = 0;
-  EXPECT_TRUE(string_util::lexical_cast<int32_t>("123", &n));
-  EXPECT_EQ(123, n);
-  EXPECT_TRUE(string_util::lexical_cast<int32_t>("-123", &n));
-  EXPECT_EQ(-123, n);
-  EXPECT_FALSE(string_util::lexical_cast<int32_t>("UNK", &n));
-
-  double d = 0.0;
-  EXPECT_TRUE(string_util::lexical_cast<double>("123.4", &d));
-  EXPECT_NEAR(123.4, d, 0.001);
-  EXPECT_FALSE(string_util::lexical_cast<double>("UNK", &d));
-
-  std::string s;
-  EXPECT_TRUE(string_util::lexical_cast<std::string>("123.4", &s));
-  EXPECT_EQ("123.4", s);
-}
-
 TEST(UtilTest, Hex) {
   for (char32 a = 0; a < 100000; ++a) {
     const std::string s = string_util::IntToHex<char32>(a);
     CHECK_EQ(a, string_util::HexToInt<char32>(s));
   }
-
   const int n = 151414;
   CHECK_EQ("24F76", string_util::IntToHex(n));
   CHECK_EQ(n, string_util::HexToInt<int>("24F76"));
+  CHECK_EQ(n, string_util::HexToInt<int>("0x24F76"));
 }
 
 TEST(UtilTest, StringViewTest) {
@@ -112,17 +87,11 @@ TEST(UtilTest, EncodePODTet) {
 }
 
 TEST(UtilTest, ItoaTest) {
-  auto Itoa = [](int v) {
-    char buf[16];
-    string_util::Itoa(v, buf);
-    return std::string(buf);
-  };
-
-  EXPECT_EQ("0", Itoa(0));
-  EXPECT_EQ("10", Itoa(10));
-  EXPECT_EQ("-10", Itoa(-10));
-  EXPECT_EQ("718", Itoa(718));
-  EXPECT_EQ("-522", Itoa(-522));
+  EXPECT_EQ("0", string_util::SimpleItoa(0));
+  EXPECT_EQ("10", string_util::SimpleItoa(10));
+  EXPECT_EQ("-10", string_util::SimpleItoa(-10));
+  EXPECT_EQ("718", string_util::SimpleItoa(718));
+  EXPECT_EQ("-522", string_util::SimpleItoa(-522));
 }
 
 TEST(UtilTest, OneCharLenTest) {
@@ -230,7 +199,6 @@ TEST(UtilTest, EncodeUTF8Test) {
   for (char32 cp = 1; cp <= kMaxUnicode; ++cp) {
     if (!string_util::IsValidCodepoint(cp)) continue;
     const size_t mblen = string_util::EncodeUTF8(cp, buf);
-    EXPECT_EQ(mblen, string_util::UTF8Length(cp));
     size_t mblen2;
     const char32 c = string_util::DecodeUTF8(buf, buf + 16, &mblen2);
     EXPECT_EQ(mblen2, mblen);
@@ -238,18 +206,15 @@ TEST(UtilTest, EncodeUTF8Test) {
   }
 
   EXPECT_EQ(1, string_util::EncodeUTF8(0, buf));
-  EXPECT_EQ(1, string_util::UTF8Length(0));
   EXPECT_EQ('\0', buf[0]);
 
   // non UCS4
   size_t mblen;
   EXPECT_EQ(3, string_util::EncodeUTF8(0x7000000, buf));
-  EXPECT_EQ(3, string_util::UTF8Length(0x7000000));
   EXPECT_EQ(kUnicodeError, string_util::DecodeUTF8(buf, buf + 16, &mblen));
   EXPECT_EQ(3, mblen);
 
   EXPECT_EQ(3, string_util::EncodeUTF8(0x8000001, buf));
-  EXPECT_EQ(3, string_util::UTF8Length(0x8000001));
   EXPECT_EQ(kUnicodeError, string_util::DecodeUTF8(buf, buf + 16, &mblen));
   EXPECT_EQ(3, mblen);
 }

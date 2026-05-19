@@ -38,8 +38,6 @@
 
 using char32 = uint32_t;
 
-static constexpr uint32_t kUnicodeError = 0xFFFD;
-
 #define FRIEND_TEST(a, b) friend class a##_Test_##b;
 
 #define RETURN_IF_ERROR(expr)          \
@@ -63,6 +61,10 @@ static constexpr uint32_t kUnicodeError = 0xFFFD;
     CHECK(_status.ok()) << _status.ToString(); \
   } while (0)
 
-#define QCHECK_OK CHECK_OK
+#define QCHECK_OK(expr)                         \
+  do {                                          \
+    const auto _status = expr;                  \
+    QCHECK(_status.ok()) << _status.ToString(); \
+  } while (0)
 
 #endif  // COMMON_H_

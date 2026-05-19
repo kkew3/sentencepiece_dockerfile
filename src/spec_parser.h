@@ -20,23 +20,24 @@
 
 #include "sentencepiece_processor.h"
 #include "third_party/absl/strings/ascii.h"
+#include "third_party/absl/strings/numbers.h"
 #include "third_party/absl/strings/str_split.h"
 #include "util.h"
 
 namespace sentencepiece {
 
-#define PARSE_STRING(param_name)                   \
-  if (name == #param_name) {                       \
-    message->set_##param_name(std::string(value)); \
-    return util::OkStatus();                       \
+#define PARSE_STRING(param_name)                           \
+  if (name == #param_name) {                               \
+    message->set_##param_name(value.data(), value.size()); \
+    return util::OkStatus();                               \
   }
 
-#define PARSE_REPEATED_STRING(param_name)                       \
-  if (name == #param_name) {                                    \
-    for (const std::string &val : util::StrSplitAsCSV(value)) { \
-      message->add_##param_name(val);                           \
-    }                                                           \
-    return util::OkStatus();                                    \
+#define PARSE_REPEATED_STRING(param_name)                \
+  if (name == #param_name) {                             \
+    for (const auto &val : util::StrSplitAsCSV(value)) { \
+      message->add_##param_name(val);                    \
+    }                                                    \
+    return util::OkStatus();                             \
   }
 
 #define PARSE_BYTE(param_name)                             \
@@ -47,8 +48,8 @@ namespace sentencepiece {
 
 #define PARSE_INT32(param_name)                                               \
   if (name == #param_name) {                                                  \
-    int32_t v;                                                                  \
-    if (!string_util::lexical_cast(value, &v))                                \
+    int32_t v;                                                                \
+    if (!absl::SimpleAtoi(value, &v))                                         \
       return util::StatusBuilder(util::StatusCode::kInvalidArgument, GTL_LOC) \
              << "cannot parse \"" << value << "\" as int.";                   \
     message->set_##param_name(v);                                             \
@@ -57,8 +58,8 @@ namespace sentencepiece {
 
 #define PARSE_UINT64(param_name)                                              \
   if (name == #param_name) {                                                  \
-    uint64_t v;                                                                 \
-    if (!string_util::lexical_cast(value, &v))                                \
+    uint64_t v;                                                               \
+    if (!absl::SimpleAtoi(value, &v))                                         \
       return util::StatusBuilder(util::StatusCode::kInvalidArgument, GTL_LOC) \
              << "cannot parse \"" << value << "\" as int.";                   \
     message->set_##param_name(v);                                             \
@@ -68,7 +69,7 @@ namespace sentencepiece {
 #define PARSE_DOUBLE(param_name)                                              \
   if (name == #param_name) {                                                  \
     double v;                                                                 \
-    if (!string_util::lexical_cast(value, &v))                                \
+    if (!absl::SimpleAtod(value, &v))                                         \
       return util::StatusBuilder(util::StatusCode::kInvalidArgument, GTL_LOC) \
              << "cannot parse \"" << value << "\" as int.";                   \
     message->set_##param_name(v);                                             \
@@ -78,7 +79,7 @@ namespace sentencepiece {
 #define PARSE_BOOL(param_name)                                                \
   if (name == #param_name) {                                                  \
     bool v;                                                                   \
-    if (!string_util::lexical_cast(value.empty() ? "true" : value, &v))       \
+    if (!absl::SimpleAtob(value.empty() ? "true" : value, &v))                \
       return util::StatusBuilder(util::StatusCode::kInvalidArgument, GTL_LOC) \
              << "cannot parse \"" << value << "\" as bool.";                  \
     message->set_##param_name(v);                                             \
@@ -194,7 +195,7 @@ inline std::string PrintProto(const NormalizerSpec &message,
 util::Status SentencePieceTrainer::SetProtoField(absl::string_view name,
                                                  absl::string_view value,
                                                  TrainerSpec *message) {
-  CHECK_OR_RETURN(message);
+  RET_CHECK(message);
 
   PARSE_REPEATED_STRING(input);
   PARSE_STRING(input_format);
@@ -256,7 +257,7 @@ util::Status SentencePieceTrainer::SetProtoField(absl::string_view name,
 util::Status SentencePieceTrainer::SetProtoField(absl::string_view name,
                                                  absl::string_view value,
                                                  NormalizerSpec *message) {
-  CHECK_OR_RETURN(message);
+  RET_CHECK(message);
 
   PARSE_STRING(name);
   PARSE_BYTE(precompiled_charsmap);

@@ -181,7 +181,7 @@ int main(int argc, char *argv[]) {
   auto load_lines = [](absl::string_view filename) {
     std::vector<std::string> lines;
     auto input = sentencepiece::filesystem::NewReadableFile(filename);
-    CHECK_OK(input->status());
+    QCHECK_OK(input->status());
     std::string line;
     while (input->ReadLine(&line)) lines.emplace_back(line);
     return lines;
@@ -278,10 +278,10 @@ int main(int argc, char *argv[]) {
     denormalizer_spec.set_escape_whitespaces(false);
   }
 
-  CHECK_OK(sentencepiece::SentencePieceTrainer::PopulateModelTypeFromString(
+  QCHECK_OK(sentencepiece::SentencePieceTrainer::PopulateModelTypeFromString(
       absl::GetFlag(FLAGS_model_type), &trainer_spec));
 
-  CHECK_OK(sentencepiece::SentencePieceTrainer::Train(
+  QCHECK_OK(sentencepiece::SentencePieceTrainer::Train(
       trainer_spec, normalizer_spec, denormalizer_spec));
 
   return 0;

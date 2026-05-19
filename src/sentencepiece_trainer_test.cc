@@ -391,6 +391,17 @@ TEST(SentencePieceTrainerTest, NormalizationTest) {
     EXPECT_EQ(normalized, "▁ガイダンス");
     ConvertToUnicodeAlignment(kInput, normalized, &offsets);
     EXPECT_EQ(offsets, std::vector<size_t>({0, 0, 2, 3, 5, 6, 7}));
+
+    // Regression: truncated UTF-8 lead bytes (e.g. a single 0xF0 announces a
+    // 4-byte sequence but supplies only 1) must not cause out-of-bounds writes
+    // inside the utf8_to_unicode_offsets lambda.
+    for (const char lead : {static_cast<char>(0xC2), static_cast<char>(0xE0),
+                            static_cast<char>(0xF0)}) {
+      const std::string truncated(1, lead);
+      std::vector<size_t> trunc_offsets = {0};
+      ConvertToUnicodeAlignment(truncated, truncated, &trunc_offsets);
+      EXPECT_EQ(trunc_offsets, std::vector<size_t>({0, 0}));
+    }
   }
 
   auto set_normalization_only = [](SentencePieceNormalizer *normalizer) {

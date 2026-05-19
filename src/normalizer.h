@@ -78,7 +78,7 @@ class Normalizer {
 
   // Normalizes a plain utf8 string into an internal representation for
   // Sentencepiece model. |norm_to_orig| stores the byte-alignment from
-  // normalized string to the original input.
+  // normalized string to the original input, if not null.
   // This function can do the following normalizations:
   // - Character normalization.
   //   (NFKC / full-width to half-width conversion etc).

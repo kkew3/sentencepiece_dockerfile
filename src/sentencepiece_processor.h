@@ -23,15 +23,11 @@
 #include <utility>
 #include <vector>
 
-#ifdef _USE_EXTERNAL_ABSL
-#include "third_party/absl/strings/string_view.h"
-#else  // _USE_EXTERNAL_ABSL
 #ifndef SWIG
 namespace absl {
 using std::string_view;
 }  // namespace absl
 #endif  // SWIG
-#endif  // _USE_EXTERNAL_ABSL
 
 namespace sentencepiece {
 namespace util {
@@ -716,7 +712,7 @@ class SentencePieceProcessor {
       absl::string_view input, absl::string_view normalized,
       const std::vector<size_t> &norm_to_orig,
       const std::vector<std::pair<absl::string_view, int>> &result,
-      SentencePieceText *spt) const;
+      SentencePieceText *spt, bool skip_surface = false) const;
 
   std::unique_ptr<ModelInterface> model_;
   std::unique_ptr<normalizer::Normalizer> normalizer_;

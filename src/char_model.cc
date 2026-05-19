@@ -13,6 +13,7 @@
 // limitations under the License.!
 
 #include "char_model.h"
+
 #include "util.h"
 
 namespace sentencepiece {

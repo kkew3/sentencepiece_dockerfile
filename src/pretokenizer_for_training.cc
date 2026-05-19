@@ -46,7 +46,7 @@ std::vector<std::string> PretokenizerForTrainingInterface::Postprocess(
   std::vector<std::string> result;
   std::string output;
 
-  int prev = 0;
+  uint32_t prev = 0;
   for (const auto &piece : spt.pieces()) {
     if (prev == piece.begin() && piece.begin() != 0) {
       result.push_back(output);

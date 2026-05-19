@@ -481,21 +481,6 @@ ModelProto MakeBaseModelProto() {
   return model_proto;
 }
 
-// Returns model protos in parameterized tests.
-const std::vector<Model::EncoderVersion> &GetEncoderVersions() {
-  static const std::vector<Model::EncoderVersion> &v =
-      *new std::vector<Model::EncoderVersion>{Model::kOptimized,
-                                              Model::kOriginal};
-  return v;
-}
-
-class UnigramModelTest : public test::TestWithParam<Model::EncoderVersion> {
- protected:
-  void SetUp() override { encoder_version_ = GetParam(); }
-  void TearDown() override {}
-  Model::EncoderVersion encoder_version_;
-};
-
 void AddPiece(ModelProto *model_proto, const std::string &piece,
               float score = 0.0) {
   auto *sp = model_proto->add_pieces();
@@ -612,7 +597,34 @@ TEST(UnigramModelTest, SampleEncodeAndScoreTest) {
   }
 }
 
-TEST_P(UnigramModelTest, PieceToIdTest) {
+TEST(UnigramModelTest, SampleEncodeAndScoreSinglePathTest) {
+  // Regression test for segfault when wor=true and include_best=true on an
+  // input that has only a single unique Viterbi path (issue #1198).
+  ModelProto model_proto = MakeBaseModelProto();
+  // Only one piece matches "A", so there is exactly one segmentation path.
+  AddPiece(&model_proto, "A", 0.0);   // 3
+  AddPiece(&model_proto, "B", 0.0);   // 4
+  AddPiece(&model_proto, "AB", 0.5);  // 5
+
+  Model model(model_proto);
+
+  // "A" can only be segmented as ["A"], a single unique path.
+  // Previously this would segfault; now it should return a result with exactly
+  // the best path and no crash.
+  for (int samples = 1; samples <= 3; ++samples) {
+    NBestEncodeResult result =
+        model.SampleEncodeAndScore("A", 1.0, samples, /*wor=*/true,
+                                   /*include_best=*/true);
+    // Must not crash and must return the best-path result.
+    EXPECT_EQ(1, result.size());
+    EXPECT_EQ(1, result[0].first.size());
+    EXPECT_EQ("A", result[0].first[0].first);
+    // Inclusion probability for a deterministic best path is log(1) == 0.
+    EXPECT_NEAR(0.0, result[0].second, 1e-6);
+  }
+}
+
+TEST(UnigramModelTest, PieceToIdTest) {
   ModelProto model_proto = MakeBaseModelProto();
 
   AddPiece(&model_proto, "a", 0.1);
@@ -621,13 +633,11 @@ TEST_P(UnigramModelTest, PieceToIdTest) {
   AddPiece(&model_proto, "d", 0.4);
 
   Model model(model_proto);
-  model.SetEncoderVersion(encoder_version_);
 
   EXPECT_EQ(model_proto.SerializeAsString(),
             model.model_proto().SerializeAsString());
 
   EXPECT_NEAR(0.1, model.min_score(), 0.001);
-  EXPECT_NEAR(0.4, model.max_score(), 0.001);
 
   EXPECT_EQ(0, model.PieceToId("<unk>"));
   EXPECT_EQ(1, model.PieceToId("<s>"));
@@ -675,11 +685,10 @@ TEST_P(UnigramModelTest, PieceToIdTest) {
   EXPECT_TRUE(model.Encode("").empty());
 }
 
-TEST_P(UnigramModelTest, PopulateNodesAllUnknownsTest) {
+TEST(UnigramModelTest, PopulateNodesAllUnknownsTest) {
   ModelProto model_proto = MakeBaseModelProto();
   AddPiece(&model_proto, "x");
   Model model(model_proto);
-  model.SetEncoderVersion(encoder_version_);
 
   Lattice lattice;
   lattice.SetSentence("abc");
@@ -694,7 +703,7 @@ TEST_P(UnigramModelTest, PopulateNodesAllUnknownsTest) {
   EXPECT_EQ(0, lattice.begin_nodes(2)[0]->id);
 }
 
-TEST_P(UnigramModelTest, PopulateNodesTest) {
+TEST(UnigramModelTest, PopulateNodesTest) {
   ModelProto model_proto = MakeBaseModelProto();
 
   AddPiece(&model_proto, "a", 0.1);   // 3
@@ -703,7 +712,6 @@ TEST_P(UnigramModelTest, PopulateNodesTest) {
   AddPiece(&model_proto, "bc", 0.4);  // 6
 
   Model model(model_proto);
-  model.SetEncoderVersion(encoder_version_);
 
   Lattice lattice;
   lattice.SetSentence("abc");
@@ -726,7 +734,7 @@ TEST_P(UnigramModelTest, PopulateNodesTest) {
   EXPECT_NEAR(0.4, lattice.begin_nodes(1)[1]->score, 0.001);
 }
 
-TEST_P(UnigramModelTest, PopulateNodesWithUnusedTest) {
+TEST(UnigramModelTest, PopulateNodesWithUnusedTest) {
   ModelProto model_proto = MakeBaseModelProto();
 
   AddPiece(&model_proto, "a", 0.1);   // 3
@@ -738,7 +746,6 @@ TEST_P(UnigramModelTest, PopulateNodesWithUnusedTest) {
   model_proto.mutable_pieces(6)->set_type(ModelProto::SentencePiece::UNUSED);
 
   Model model(model_proto);
-  model.SetEncoderVersion(encoder_version_);
 
   Lattice lattice;
   lattice.SetSentence("abc");
@@ -753,7 +760,7 @@ TEST_P(UnigramModelTest, PopulateNodesWithUnusedTest) {
   EXPECT_EQ(0, lattice.begin_nodes(2)[0]->id);
 }
 
-TEST_P(UnigramModelTest, ModelNBestTest) {
+TEST(UnigramModelTest, ModelNBestTest) {
   ModelProto model_proto = MakeBaseModelProto();
   AddPiece(&model_proto, "a", 0.0);     // 3
   AddPiece(&model_proto, "b", 0.0);     // 4
@@ -763,7 +770,6 @@ TEST_P(UnigramModelTest, ModelNBestTest) {
   AddPiece(&model_proto, "abc", 10.0);  // 8
 
   Model model(model_proto);
-  model.SetEncoderVersion(encoder_version_);
 
   auto nbest = model.NBestEncode("", 10);
   EXPECT_EQ(1, nbest.size());
@@ -779,7 +785,7 @@ TEST_P(UnigramModelTest, ModelNBestTest) {
   EXPECT_FALSE(sample.empty());
 }
 
-TEST_P(UnigramModelTest, EncodeTest) {
+TEST(UnigramModelTest, EncodeTest) {
   ModelProto model_proto = MakeBaseModelProto();
   AddPiece(&model_proto, "ab", 0.0);         // 3
   AddPiece(&model_proto, "cd", -0.1);        // 4
@@ -802,7 +808,6 @@ TEST_P(UnigramModelTest, EncodeTest) {
       ModelProto::SentencePiece::USER_DEFINED);
 
   Model model(model_proto);
-  model.SetEncoderVersion(encoder_version_);
 
   EncodeResult result;
 
@@ -870,7 +875,7 @@ TEST_P(UnigramModelTest, EncodeTest) {
   EXPECT_EQ("cd", result[3].first);
 }
 
-TEST_P(UnigramModelTest, EncodeWithUnusedTest) {
+TEST(UnigramModelTest, EncodeWithUnusedTest) {
   ModelProto model_proto = MakeBaseModelProto();
 
   AddPiece(&model_proto, "abcd", 10.0);  // 3
@@ -885,7 +890,6 @@ TEST_P(UnigramModelTest, EncodeWithUnusedTest) {
   // No unused.
   {
     Model model(model_proto);
-    model.SetEncoderVersion(encoder_version_);
     const auto result = model.Encode("abcd");
     EXPECT_EQ(1, result.size());
     EXPECT_EQ("abcd", result[0].first);
@@ -894,7 +898,6 @@ TEST_P(UnigramModelTest, EncodeWithUnusedTest) {
   {
     model_proto.mutable_pieces(3)->set_type(ModelProto::SentencePiece::UNUSED);
     Model model(model_proto);
-    model.SetEncoderVersion(encoder_version_);
     const auto result = model.Encode("abcd");
     EXPECT_EQ(2, result.size());
     EXPECT_EQ("abc", result[0].first);
@@ -905,7 +908,6 @@ TEST_P(UnigramModelTest, EncodeWithUnusedTest) {
     model_proto.mutable_pieces(3)->set_type(ModelProto::SentencePiece::UNUSED);
     model_proto.mutable_pieces(5)->set_type(ModelProto::SentencePiece::UNUSED);
     Model model(model_proto);
-    model.SetEncoderVersion(encoder_version_);
     const auto result = model.Encode("abcd");
     EXPECT_EQ(2, result.size());
     EXPECT_EQ("abc", result[0].first);
@@ -919,7 +921,6 @@ TEST_P(UnigramModelTest, EncodeWithUnusedTest) {
     model_proto.mutable_pieces(4)->set_type(ModelProto::SentencePiece::UNUSED);
     model_proto.mutable_pieces(5)->set_type(ModelProto::SentencePiece::NORMAL);
     Model model(model_proto);
-    model.SetEncoderVersion(encoder_version_);
     const auto result = model.Encode("abcd");
     EXPECT_EQ(2, result.size());
     EXPECT_EQ("ab", result[0].first);
@@ -927,7 +928,7 @@ TEST_P(UnigramModelTest, EncodeWithUnusedTest) {
   }
 }
 
-TEST_P(UnigramModelTest, VerifyOutputsEquivalent) {
+TEST(UnigramModelTest, VerifyOutputsEquivalent) {
   ModelProto model_proto = MakeBaseModelProto();
 
   AddPiece(&model_proto, "abcd", 10.0);  // 3
@@ -938,8 +939,8 @@ TEST_P(UnigramModelTest, VerifyOutputsEquivalent) {
   AddPiece(&model_proto, "b", 1.9);      // 8
   AddPiece(&model_proto, "c", 2.0);      // 9
   AddPiece(&model_proto, "d", 1.0);      // 10
+
   Model model(model_proto);
-  model.SetEncoderVersion(encoder_version_);
   // Equivalent outputs.
   EXPECT_TRUE(model.VerifyOutputsEquivalent("", ""));
   EXPECT_TRUE(model.VerifyOutputsEquivalent("a b", "a b"));
@@ -949,9 +950,6 @@ TEST_P(UnigramModelTest, VerifyOutputsEquivalent) {
   EXPECT_FALSE(model.VerifyOutputsEquivalent("a", "a b"));
   EXPECT_FALSE(model.VerifyOutputsEquivalent("ab", "a b"));
 }
-
-INSTANTIATE_TEST_SUITE_P(ParametrizedUnigramModelTests, UnigramModelTest,
-                         test::ValuesIn(GetEncoderVersions()));
 
 }  // namespace unigram
 }  // namespace sentencepiece

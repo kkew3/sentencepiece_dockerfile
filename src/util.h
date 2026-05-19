@@ -31,14 +31,23 @@
 #include "common.h"
 #include "config.h"
 #include "sentencepiece_processor.h"
+#include "third_party/absl/numeric/bits.h"
+#include "third_party/absl/random/random.h"
+#include "third_party/absl/strings/ascii.h"
+#include "third_party/absl/strings/numbers.h"
+#include "third_party/absl/strings/str_cat.h"
+#include "third_party/absl/strings/str_format.h"
+#include "third_party/absl/strings/str_join.h"
 #include "third_party/absl/strings/string_view.h"
+#include "third_party/absl/strings/strip.h"
+
+static constexpr uint32_t kUnicodeError = 0xFFFD;
 
 namespace sentencepiece {
+
 template <typename T>
 std::ostream &operator<<(std::ostream &out, const std::vector<T> &v) {
-  for (const auto n : v) {
-    out << " " << n;
-  }
+  out << absl::StrJoin(v, " ");
   return out;
 }
 
@@ -53,101 +62,40 @@ std::string GetDataDir();
 // String utilities
 namespace string_util {
 
-template <typename Target>
-inline bool lexical_cast(absl::string_view arg, Target *result) {
-  std::stringstream ss;
-  return (ss << arg.data() && ss >> *result);
-}
-
-template <>
-inline bool lexical_cast(absl::string_view arg, bool *result) {
-  const char *kTrue[] = {"1", "t", "true", "y", "yes"};
-  const char *kFalse[] = {"0", "f", "false", "n", "no"};
-  std::string lower_value = std::string(arg);
-  std::transform(lower_value.begin(), lower_value.end(), lower_value.begin(),
-                 ::tolower);
-  for (size_t i = 0; i < 5; ++i) {
-    if (lower_value == kTrue[i]) {
-      *result = true;
-      return true;
-    } else if (lower_value == kFalse[i]) {
-      *result = false;
-      return true;
-    }
-  }
-
-  return false;
-}
-
-template <>
-inline bool lexical_cast(absl::string_view arg, std::string *result) {
-  *result = std::string(arg);
-  return true;
-}
-
 template <typename T>
 inline bool DecodePOD(absl::string_view str, T *result) {
+  static_assert(std::is_trivially_copyable<T>::value,
+                "T must be trivially copyable");
   if (sizeof(*result) != str.size()) {
     return false;
   }
-  memcpy(result, str.data(), sizeof(T));
+  std::memcpy(result, str.data(), sizeof(T));
   return true;
 }
 
 template <typename T>
 inline std::string EncodePOD(const T &value) {
-  std::string s;
-  s.resize(sizeof(T));
-  memcpy(const_cast<char *>(s.data()), &value, sizeof(T));
-  return s;
+  static_assert(std::is_trivially_copyable<T>::value,
+                "T must be trivially copyable");
+  return std::string(reinterpret_cast<const char *>(&value), sizeof(T));
 }
 
 template <typename T>
 inline std::string IntToHex(T value) {
-  std::ostringstream os;
-  os << std::hex << std::uppercase << value;
-  return os.str();
+  return absl::StrFormat("%X", value);
 }
 
 template <typename T>
 inline T HexToInt(absl::string_view value) {
-  T n;
-  std::istringstream is(value.data());
-  is >> std::hex >> n;
+  absl::ConsumePrefix(&value, "0x");
+  T n = 0;
+  if (!absl::numbers_internal::safe_strtoi_base(value, &n, 16)) return 0;
   return n;
 }
 
 template <typename T>
-inline size_t Itoa(T val, char *s) {
-  char *org = s;
-
-  if (val < 0) {
-    *s++ = '-';
-    val = -val;
-  }
-  char *t = s;
-
-  T mod = 0;
-  while (val) {
-    mod = val % 10;
-    *t++ = static_cast<char>(mod) + '0';
-    val /= 10;
-  }
-
-  if (s == t) {
-    *t++ = '0';
-  }
-
-  *t = '\0';
-  std::reverse(s, t);
-  return static_cast<size_t>(t - org);
-}
-
-template <typename T>
-std::string SimpleItoa(T val) {
-  char buf[32];
-  Itoa<T>(val, buf);
-  return std::string(buf);
+inline std::string SimpleItoa(T val) {
+  return absl::StrCat(val);
 }
 
 // Return length of a single UTF-8 source character
@@ -179,21 +127,6 @@ inline bool IsValidDecodeUTF8(absl::string_view input, size_t *mblen) {
 }
 
 size_t EncodeUTF8(char32 c, char *output);
-
-// Return the length of the UTF-8 character in bytes.
-inline size_t UTF8Length(char32 c) {
-  if (c <= 0x7F) {
-    return 1;
-  }
-  if (c <= 0x7FF) {
-    return 2;
-  }
-  // If `c` is out of range, we consider it as kUnicodeError, which is 3 bytes.
-  if (c <= 0xFFFF || c > 0x10FFFF) {
-    return 3;
-  }
-  return 4;
-}
 
 std::string UnicodeCharToUTF8(const char32 c);
 
@@ -255,66 +188,20 @@ void InsertOrDie(Collection *const collection,
   CHECK(InsertIfNotPresent(collection, key, data)) << "duplicate key";
 }
 
-// hash
-inline void mix(uint64_t &a, uint64_t &b, uint64_t &c) {  // 64bit version
-  a -= b;
-  a -= c;
-  a ^= (c >> 43);
-  b -= c;
-  b -= a;
-  b ^= (a << 9);
-  c -= a;
-  c -= b;
-  c ^= (b >> 8);
-  a -= b;
-  a -= c;
-  a ^= (c >> 38);
-  b -= c;
-  b -= a;
-  b ^= (a << 23);
-  c -= a;
-  c -= b;
-  c ^= (b >> 5);
-  a -= b;
-  a -= c;
-  a ^= (c >> 35);
-  b -= c;
-  b -= a;
-  b ^= (a << 49);
-  c -= a;
-  c -= b;
-  c ^= (b >> 11);
-  a -= b;
-  a -= c;
-  a ^= (c >> 12);
-  b -= c;
-  b -= a;
-  b ^= (a << 18);
-  c -= a;
-  c -= b;
-  c ^= (b >> 22);
-}
-
-inline uint64_t FingerprintCat(uint64_t x, uint64_t y) {
-  uint64_t b = 0xe08c1d668b756f82;  // more of the golden ratio
-  mix(x, b, y);
-  return y;
-}
-
 }  // namespace port
 
 namespace random {
 
-std::mt19937 *GetRandomGenerator();
+absl::BitGen *GetRandomGenerator();
 
 template <typename T>
 class ReservoirSampler {
  public:
   explicit ReservoirSampler(std::vector<T> *sampled, uint64_t size)
-      : sampled_(sampled), size_(size), engine_(GetRandomGeneratorSeed()) {}
+      : sampled_(sampled), size_(size) {}
   explicit ReservoirSampler(std::vector<T> *sampled, uint64_t size,
                             uint64_t seed)
-      : sampled_(sampled), size_(size), engine_(seed) {}
+      : sampled_(sampled), size_(size), gen_(std::seed_seq{seed}) {}
   virtual ~ReservoirSampler() {}
 
   void Add(const T &item) {
@@ -324,8 +211,7 @@ class ReservoirSampler {
     if (sampled_->size() < size_) {
       sampled_->push_back(item);
     } else {
-      std::uniform_int_distribution<uint64_t> dist(0, total_ - 1);
-      const uint64_t n = dist(engine_);
+      const auto n = absl::Uniform<uint64_t>(gen_, 0, total_ - 1);
       if (n < sampled_->size()) (*sampled_)[n] = item;
     }
   }
@@ -336,34 +222,19 @@ class ReservoirSampler {
   std::vector<T> *sampled_ = nullptr;
   uint64_t size_ = 0;
   uint64_t total_ = 0;
-  std::mt19937 engine_;
+  absl::BitGen gen_;
 };
 
 }  // namespace random
 
 namespace util {
 
-#if defined(_FREEBSD)
-#include <sys/endian.h>
-#endif
-#if !defined(__APPLE__) && !defined(_WIN32) && !defined(_FREEBSD) && \
-    !defined(_AIX)
-#include <endian.h>
-#if BYTE_ORDER == __BIG_ENDIAN
-#define IS_BIG_ENDIAN
-#endif
-#endif
-
-#if defined(_AIX) && BYTE_ORDER == BIG_ENDIAN
-#define IS_BIG_ENDIAN
-#endif
-
 constexpr bool is_bigendian() {
-#ifdef IS_BIG_ENDIAN
-  return true;
-#else   // IS_BIG_ENDIAN
-  return false;
-#endif  // IS_BIG_ENDIAN
+  if constexpr (absl::endian::native == absl::endian::big) {
+    return true;
+  } else {
+    return false;
+  }
 }
 
 inline uint32_t Swap32(uint32_t x) {
@@ -381,9 +252,9 @@ inline std::string JoinPath(absl::string_view path) {
 template <typename... T>
 inline std::string JoinPath(absl::string_view first, const T &...rest) {
 #ifdef OS_WIN
-  return JoinPath(first) + "\\" + JoinPath(rest...);
+  return absl::StrCat(JoinPath(first), "\\", JoinPath(rest...));
 #else
-  return JoinPath(first) + "/" + JoinPath(rest...);
+  return absl::StrCat(JoinPath(first), "/", JoinPath(rest...));
 #endif
 }
 
@@ -438,23 +309,30 @@ class StatusBuilder {
   operator Status() const { return Status(code_, os_.str()); }
 
  private:
-  StatusCode code_;
+  const StatusCode code_;
   std::ostringstream os_;
 };
 
-#define CHECK_OR_RETURN(condition)                           \
+#define RET_CHECK(condition)                                 \
   if (condition) {                                           \
   } else /* NOLINT */                                        \
     return ::sentencepiece::util::StatusBuilder(             \
                ::sentencepiece::util::StatusCode::kInternal) \
            << __FILE__ << "(" << __LINE__ << ") [" << #condition << "] "
 
-#define CHECK_EQ_OR_RETURN(a, b) CHECK_OR_RETURN((a) == (b))
-#define CHECK_NE_OR_RETURN(a, b) CHECK_OR_RETURN((a) != (b))
-#define CHECK_GE_OR_RETURN(a, b) CHECK_OR_RETURN((a) >= (b))
-#define CHECK_LE_OR_RETURN(a, b) CHECK_OR_RETURN((a) <= (b))
-#define CHECK_GT_OR_RETURN(a, b) CHECK_OR_RETURN((a) > (b))
-#define CHECK_LT_OR_RETURN(a, b) CHECK_OR_RETURN((a) < (b))
+#define RET_CHECK_EQ(a, b) RET_CHECK((a) == (b))
+#define RET_CHECK_NE(a, b) RET_CHECK((a) != (b))
+#define RET_CHECK_GE(a, b) RET_CHECK((a) >= (b))
+#define RET_CHECK_LE(a, b) RET_CHECK((a) <= (b))
+#define RET_CHECK_GT(a, b) RET_CHECK((a) > (b))
+#define RET_CHECK_LT(a, b) RET_CHECK((a) < (b))
+
+#define RET_QCHECK_EQ(a, b) RET_CHECK_EQ(a, b)
+#define RET_QCHECK_NE(a, b) RET_CHECK_NE(a, b)
+#define RET_QCHECK_GE(a, b) RET_CHECK_GE(a, b)
+#define RET_QCHECK_LE(a, b) RET_CHECK_LE(a, b)
+#define RET_QCHECK_GT(a, b) RET_CHECK_GT(a, b)
+#define RET_QCHECK_LT(a, b) RET_CHECK_LT(a, b)
 
 }  // namespace util
 

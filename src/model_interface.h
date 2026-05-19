@@ -54,7 +54,6 @@ class ModelProto;
 class ModelInterface {
  public:
   using PieceToIdMap = absl::flat_hash_map<absl::string_view, int>;
-  //                                           string_util::string_view_hash>;
 
   absl::string_view unk_piece() const;
   absl::string_view bos_piece() const;
@@ -136,6 +135,8 @@ class ModelInterface {
   // Returns the string representation of vocab with `id`.
   // id must be 0 <= id < GetPieceSize().
   virtual const std::string &IdToPiece(int id) const {
+    DCHECK_GE(id, 0);
+    DCHECK_LT(id, model_proto_->pieces_size());
     return model_proto_->pieces(id).piece();
   }
 
@@ -150,35 +151,47 @@ class ModelInterface {
   // Score represents a log probability of the piece.
   // We can roughly estimate the unigram frequency of the piece.
   virtual float GetScore(int id) const {
+    DCHECK_GE(id, 0);
+    DCHECK_LT(id, model_proto_->pieces_size());
     return model_proto_->pieces(id).score();
   }
 
   // Returns true if `id` is unknown symbol.
   virtual bool IsUnknown(int id) const {
+    DCHECK_GE(id, 0);
+    DCHECK_LT(id, model_proto_->pieces_size());
     return (model_proto_->pieces(id).type() ==
             ModelProto::SentencePiece::UNKNOWN);
   }
 
   // Returns true if `id` is control symbol.
   virtual bool IsControl(int id) const {
+    DCHECK_GE(id, 0);
+    DCHECK_LT(id, model_proto_->pieces_size());
     return (model_proto_->pieces(id).type() ==
             ModelProto::SentencePiece::CONTROL);
   }
 
   // Returns true if `id` is unused symbol.
   virtual bool IsUnused(int id) const {
+    DCHECK_GE(id, 0);
+    DCHECK_LT(id, model_proto_->pieces_size());
     return (model_proto_->pieces(id).type() ==
             ModelProto::SentencePiece::UNUSED);
   }
 
   // Returns true if `id` is user defined symbol.
   virtual bool IsUserDefined(int id) const {
+    DCHECK_GE(id, 0);
+    DCHECK_LT(id, model_proto_->pieces_size());
     return (model_proto_->pieces(id).type() ==
             ModelProto::SentencePiece::USER_DEFINED);
   }
 
   // Returns true if `id` is byte symbol.
   virtual bool IsByte(int id) const {
+    DCHECK_GE(id, 0);
+    DCHECK_LT(id, model_proto_->pieces_size());
     return (model_proto_->pieces(id).type() == ModelProto::SentencePiece::BYTE);
   }
 
@@ -201,30 +214,42 @@ class ModelInterface {
 
   // Non-virtual (inlined) implementation for faster execution.
   inline float GetScoreInlined(int id) const {
+    DCHECK_GE(id, 0);
+    DCHECK_LT(id, model_proto_->pieces_size());
     return model_proto_->pieces(id).score();
   }
 
   inline bool IsUnknownInlined(int id) const {
+    DCHECK_GE(id, 0);
+    DCHECK_LT(id, model_proto_->pieces_size());
     return (model_proto_->pieces(id).type() ==
             ModelProto::SentencePiece::UNKNOWN);
   }
 
   inline bool IsControlInlined(int id) const {
+    DCHECK_GE(id, 0);
+    DCHECK_LT(id, model_proto_->pieces_size());
     return (model_proto_->pieces(id).type() ==
             ModelProto::SentencePiece::CONTROL);
   }
 
   inline bool IsUnusedInlined(int id) const {
+    DCHECK_GE(id, 0);
+    DCHECK_LT(id, model_proto_->pieces_size());
     return (model_proto_->pieces(id).type() ==
             ModelProto::SentencePiece::UNUSED);
   }
 
   inline bool IsUserDefinedInlined(int id) const {
+    DCHECK_GE(id, 0);
+    DCHECK_LT(id, model_proto_->pieces_size());
     return (model_proto_->pieces(id).type() ==
             ModelProto::SentencePiece::USER_DEFINED);
   }
 
   inline bool IsByteInlined(int id) const {
+    DCHECK_GE(id, 0);
+    DCHECK_LT(id, model_proto_->pieces_size());
     return (model_proto_->pieces(id).type() == ModelProto::SentencePiece::BYTE);
   }
 

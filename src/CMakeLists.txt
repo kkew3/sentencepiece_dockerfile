@@ -12,20 +12,13 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.!
 
-if (SPM_ABSL_PROVIDER STREQUAL "module" OR SPM_ABSL_PROVIDER STREQUAL "package")
-  set(ABSL_FLAGS_SRCS "")
-  set(ABSL_STRINGS_SRCS "")
-  list(APPEND SPM_LIBS absl::strings)
-  list(APPEND SPM_LIBS absl::flags)
-  list(APPEND SPM_LIBS absl::flags_parse)
-  list(APPEND SPM_LIBS absl::log)
-  list(APPEND SPM_LIBS absl::check)
-  add_compile_definitions(_USE_EXTERNAL_ABSL)
-elseif (SPM_ABSL_PROVIDER STREQUAL "internal")
- set(ABSL_FLAGS_SRCS
-    ${CMAKE_CURRENT_SOURCE_DIR}/../third_party/absl/flags/flag.cc
-    ${CMAKE_CURRENT_SOURCE_DIR}/../third_party/absl/log/log.cc)
-endif()
+list(APPEND SPM_LIBS absl::strings)
+list(APPEND SPM_LIBS absl::flags)
+list(APPEND SPM_LIBS absl::flags_parse)
+list(APPEND SPM_LIBS absl::log)
+list(APPEND SPM_LIBS absl::log_initialize)
+list(APPEND SPM_LIBS absl::check)
+list(APPEND SPM_LIBS absl::random_random)
 
 if (SPM_PROTOBUF_PROVIDER STREQUAL "internal")
   set(SPM_PROTO_HDRS builtin_pb/sentencepiece.pb.h)
@@ -60,7 +53,7 @@ if (SPM_PROTOBUF_PROVIDER STREQUAL "internal")
     ${CMAKE_CURRENT_SOURCE_DIR}/../third_party/protobuf-lite/zero_copy_stream.cc
     ${CMAKE_CURRENT_SOURCE_DIR}/../third_party/protobuf-lite/zero_copy_stream_impl.cc
     ${CMAKE_CURRENT_SOURCE_DIR}/../third_party/protobuf-lite/zero_copy_stream_impl_lite.cc)
-  if (MSVC)
+  if (WIN32)
     add_definitions("/DHAVE_PTHREAD /wd4018 /wd4514")
   else()
     add_definitions("-pthread -DHAVE_PTHREAD=1 -Wno-sign-compare -Wno-deprecated-declarations")
@@ -111,9 +104,7 @@ set(SPM_SRCS
   sentencepiece_processor.cc
   unigram_model.cc
   util.cc
-  word_model.cc
-  ${ABSL_STRINGS_SRCS}
-  ${ABSL_FLAGS_SRCS})
+  word_model.cc)
 
 set(SPM_TRAIN_SRCS
   ${SPM_PROTO_HDRS}
@@ -151,7 +142,6 @@ set(SPM_TEST_SRCS
   char_model_test.cc
   char_model_trainer_test.cc
   filesystem_test.cc
-  init_test.cc
   model_factory_test.cc
   model_interface_test.cc
   normalizer_test.cc
@@ -168,6 +158,15 @@ set(SPM_TEST_SRCS
   word_model_test.cc
   word_model_trainer_test.cc
   pretokenizer_for_training_test.cc)
+
+if (SPM_NLCODEC_BPE)
+  set(NLCODEC_DIR ${CMAKE_CURRENT_SOURCE_DIR}/../contrib/nlcodec)
+  include_directories(${CMAKE_CURRENT_SOURCE_DIR}/..)
+  include_directories(${CMAKE_CURRENT_SOURCE_DIR})
+  add_compile_definitions(SPM_NLCODEC_BPE)
+  list(APPEND SPM_TRAIN_SRCS ${NLCODEC_DIR}/bpe_model_trainer_nlcodec.cc)
+  list(APPEND SPM_TEST_SRCS ${NLCODEC_DIR}/bpe_model_trainer_nlcodec_test.cc)
+endif()
 
 find_package(Threads REQUIRED)
 
@@ -252,7 +251,7 @@ endif()
 set_target_properties(sentencepiece-static PROPERTIES OUTPUT_NAME "sentencepiece")
 set_target_properties(sentencepiece_train-static PROPERTIES OUTPUT_NAME "sentencepiece_train")
 
-if (NOT MSVC)
+if (NOT WIN32)
   set(CMAKE_CXX_FLAGS "-O3 -Wall -fPIC ${CMAKE_CXX_FLAGS}")
   set_source_files_properties(
     sentencepiece.pb.cc sentencepiece_model.pb.cc

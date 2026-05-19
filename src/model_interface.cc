@@ -91,7 +91,10 @@ void ModelInterface::InitializePieces() {
       status_ = util::InternalError("piece must not be empty.");
       return;
     }
-
+    if (sp.piece().find('\0') != absl::string_view::npos) {
+      status_ = util::InternalError("piece must not include null character.");
+      return;
+    }
     const bool is_normal_piece =
         (sp.type() == ModelProto::SentencePiece::NORMAL ||
          sp.type() == ModelProto::SentencePiece::USER_DEFINED ||
@@ -220,7 +223,7 @@ int PieceToByte(absl::string_view piece) {
     }
     return m;
   }();
-  const auto it = kMap->find(std::string(piece));
+  const auto it = kMap->find(piece);
   if (it == kMap->end()) {
     return -1;
   } else {

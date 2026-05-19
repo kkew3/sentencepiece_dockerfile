@@ -62,13 +62,19 @@ void Normalizer::Init() {
     // but the number of double array units.
     trie_->set_array(const_cast<char *>(trie_blob.data()),
                      trie_blob.size() / trie_->unit_size());
+
+    if (!trie_->validate()) {
+      status_ = util::InternalError(
+          "Trie data contains out-of-bounds node references.");
+      return;
+    }
   }
 }
 
 util::Status Normalizer::Normalize(absl::string_view input,
                                    std::string *normalized,
                                    std::vector<size_t> *norm_to_orig) const {
-  norm_to_orig->clear();
+  if (norm_to_orig) norm_to_orig->clear();
   normalized->clear();
 
   if (input.empty()) {
@@ -99,22 +105,20 @@ util::Status Normalizer::Normalize(absl::string_view input,
   // Reserves the output buffer to avoid re-allocations.
   const size_t kReservedSize = input.size() * 3;
   normalized->reserve(kReservedSize);
-  norm_to_orig->reserve(kReservedSize);
+  if (norm_to_orig) norm_to_orig->reserve(kReservedSize);
 
   // Replaces white space with U+2581 (LOWER ONE EIGHT BLOCK)
   // if escape_whitespaces() is set (default = true).
-  const absl::string_view kSpaceSymbol = "\xe2\x96\x81";
+  const absl::string_view kSpaceSymbol =
+      spec_->escape_whitespaces() ? "\xe2\x96\x81" : " ";
 
   // adds kSpaceSymbol to the current context.
-  auto add_ws = [this, &consumed, &normalized, &norm_to_orig, &kSpaceSymbol]() {
-    if (spec_->escape_whitespaces()) {
-      normalized->append(kSpaceSymbol.data(), kSpaceSymbol.size());
+  auto add_ws = [&consumed, &normalized, &norm_to_orig, &kSpaceSymbol]() {
+    normalized->append(kSpaceSymbol.data(), kSpaceSymbol.size());
+    if (norm_to_orig) {
       for (size_t n = 0; n < kSpaceSymbol.size(); ++n) {
         norm_to_orig->push_back(consumed);
       }
-    } else {
-      normalized->append(" ");
-      norm_to_orig->push_back(consumed);
     }
   };
 
@@ -137,15 +141,11 @@ util::Status Normalizer::Normalize(absl::string_view input,
     if (!sp.empty()) {
       const char *data = sp.data();
       for (size_t n = 0; n < sp.size(); ++n) {
-        if (spec_->escape_whitespaces() && data[n] == ' ') {
-          // replace ' ' with kSpaceSymbol.
-          normalized->append(kSpaceSymbol.data(), kSpaceSymbol.size());
-          for (size_t m = 0; m < kSpaceSymbol.size(); ++m) {
-            norm_to_orig->push_back(consumed);
-          }
+        if (data[n] == ' ') {
+          add_ws();
         } else {
           *normalized += data[n];
-          norm_to_orig->push_back(consumed);
+          if (norm_to_orig) norm_to_orig->push_back(consumed);
         }
       }
       // Checks whether the last character of sp is whitespace.
@@ -161,31 +161,31 @@ util::Status Normalizer::Normalize(absl::string_view input,
 
   // Ignores trailing space.
   if (spec_->remove_extra_whitespaces()) {
-    const absl::string_view space =
-        spec_->escape_whitespaces() ? kSpaceSymbol : " ";
-    while (absl::EndsWith(*normalized, space)) {
-      const int length = normalized->size() - space.size();
-      CHECK_GE_OR_RETURN(length, 0);
-      consumed = (*norm_to_orig)[length];
+    while (absl::EndsWith(*normalized, kSpaceSymbol)) {
+      const int length = normalized->size() - kSpaceSymbol.size();
+      RET_CHECK_GE(length, 0);
       normalized->resize(length);
-      norm_to_orig->resize(length);
+      if (norm_to_orig) {
+        consumed = (*norm_to_orig)[length];
+        norm_to_orig->resize(length);
+      }
     }
   }
 
   // Adds a space symbol as a suffix (default is false)
   if (treat_whitespace_as_suffix_ && spec_->add_dummy_prefix()) add_ws();
 
-  norm_to_orig->push_back(consumed);
-
-  CHECK_EQ_OR_RETURN(norm_to_orig->size(), normalized->size() + 1);
+  if (norm_to_orig) {
+    norm_to_orig->push_back(consumed);
+    RET_CHECK_EQ(norm_to_orig->size(), normalized->size() + 1);
+  }
 
   return util::OkStatus();
 }
 
 std::string Normalizer::Normalize(absl::string_view input) const {
-  std::vector<size_t> norm_to_orig;
   std::string normalized;
-  Normalize(input, &normalized, &norm_to_orig).IgnoreError();
+  Normalize(input, &normalized, nullptr).IgnoreError();
   return normalized;
 }
 
@@ -202,7 +202,7 @@ std::pair<absl::string_view, int> Normalizer::NormalizePrefix(
   }
 
   size_t longest_length = 0;
-  int longest_value = 0;
+  size_t longest_value = 0;
 
   if (trie_ != nullptr) {
     // Allocates trie_results in stack, which makes the encoding speed 36%
@@ -296,7 +296,7 @@ util::Status Normalizer::DecodePrecompiledCharsMap(
   blob.remove_prefix(sizeof(trie_blob_size));
 
   if constexpr (util::is_bigendian()) {
-    CHECK_OR_RETURN(buffer);
+    RET_CHECK(buffer);
     buffer->assign(blob.data(), trie_blob_size);
     uint32_t *data =
         reinterpret_cast<uint32_t *>(const_cast<char *>(buffer->data()));

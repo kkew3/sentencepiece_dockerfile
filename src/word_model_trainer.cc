@@ -12,6 +12,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.!
 
+#include "word_model_trainer.h"
+
 #include <cmath>
 #include <string>
 
@@ -19,7 +21,6 @@
 #include "third_party/absl/strings/string_view.h"
 #include "util.h"
 #include "word_model.h"
-#include "word_model_trainer.h"
 
 namespace sentencepiece {
 namespace word {
@@ -27,20 +28,20 @@ namespace word {
 util::Status Trainer::Train() {
   RETURN_IF_ERROR(status());
 
-  CHECK_OR_RETURN(normalizer_spec_.escape_whitespaces());
-  CHECK_EQ_OR_RETURN(TrainerSpec::WORD, trainer_spec_.model_type());
+  RET_CHECK(normalizer_spec_.escape_whitespaces());
+  RET_CHECK_EQ(TrainerSpec::WORD, trainer_spec_.model_type());
 
   RETURN_IF_ERROR(LoadSentences());
 
   absl::flat_hash_map<std::string, uint64_t> freq;
   for (const auto &it : sentences_) {
     for (const auto &s : SplitIntoWords(it.first)) {
-      freq[std::string(s)] += it.second;
+      freq[s] += it.second;
     }
   }
 
   const int vocab_size = trainer_spec_.vocab_size() - meta_pieces_.size();
-  CHECK_GE_OR_RETURN(vocab_size, 0);
+  RET_CHECK_GE(vocab_size, 0);
 
   uint64_t sum = 0;
   for (const auto &it : freq) {
@@ -49,7 +50,7 @@ util::Status Trainer::Train() {
 
   const auto logsum = std::log(static_cast<float>(sum));
 
-  CHECK_OR_RETURN(final_pieces_.empty());
+  RET_CHECK(final_pieces_.empty());
   for (const auto &it : Sorted(freq)) {
     if (it.first.find(kUNKStr) != std::string::npos) {
       continue;

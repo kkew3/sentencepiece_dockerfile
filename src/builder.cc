@@ -165,8 +165,8 @@ util::Status IsValidNormalizerData(absl::string_view blob_data) {
 // static
 util::Status Builder::CompileCharsMap(const CharsMap &chars_map,
                                       std::string *output) {
-  CHECK_OR_RETURN(output);
-  CHECK_OR_RETURN(!chars_map.empty());
+  RET_CHECK(output);
+  RET_CHECK(!chars_map.empty());
 
   LOG(INFO) << "Loading CharsMap of size=" << chars_map.size();
 
@@ -180,7 +180,7 @@ util::Status Builder::CompileCharsMap(const CharsMap &chars_map,
   for (auto &p : normalized2pos) {
     p.second = normalized.size();  // stores the pointer (position).
     const std::string utf8_out = string_util::UnicodeTextToUTF8(p.first);
-    CHECK_OR_RETURN(string_util::IsStructurallyValid(utf8_out));
+    RET_CHECK(string_util::IsStructurallyValid(utf8_out));
     normalized += utf8_out;
     normalized += '\0';
   }
@@ -189,8 +189,8 @@ util::Status Builder::CompileCharsMap(const CharsMap &chars_map,
   for (const auto &p : chars_map) {
     // The value of Trie stores the pointer to the normalized string.
     const std::string utf8_in = string_util::UnicodeTextToUTF8(p.first);
-    CHECK_OR_RETURN(!utf8_in.empty());
-    CHECK_OR_RETURN(string_util::IsStructurallyValid(utf8_in));
+    RET_CHECK(!utf8_in.empty());
+    RET_CHECK(string_util::IsStructurallyValid(utf8_in));
     kv.emplace_back(utf8_in, port::FindOrDie(normalized2pos, p.second));
   }
 
@@ -203,8 +203,8 @@ util::Status Builder::CompileCharsMap(const CharsMap &chars_map,
   }
 
   Darts::DoubleArray trie;
-  CHECK_EQ_OR_RETURN(0, trie.build(key.size(), const_cast<char **>(&key[0]),
-                                   nullptr, &value[0]))
+  RET_CHECK_EQ(0, trie.build(key.size(), const_cast<char **>(&key[0]), nullptr,
+                             &value[0]))
       << "cannot build double-array";
 
   int max_nodes_size = 0;
@@ -215,7 +215,7 @@ util::Status Builder::CompileCharsMap(const CharsMap &chars_map,
                                                   results.size(), strlen(str));
     max_nodes_size = std::max(num_nodes, max_nodes_size);
   }
-  CHECK_LT_OR_RETURN(max_nodes_size, Normalizer::kMaxTrieResultsSize)
+  RET_CHECK_LT(max_nodes_size, Normalizer::kMaxTrieResultsSize)
       << "This charmaps contain many shared prefix. "
       << "The number of shared prefix must be less than "
       << Normalizer::kMaxTrieResultsSize;
@@ -233,7 +233,7 @@ util::Status Builder::CompileCharsMap(const CharsMap &chars_map,
 // static
 util::Status Builder::DecompileCharsMap(absl::string_view blob,
                                         Builder::CharsMap *chars_map) {
-  CHECK_OR_RETURN(chars_map);
+  RET_CHECK(chars_map);
   chars_map->clear();
 
   absl::string_view trie_blob, normalized;
@@ -286,7 +286,7 @@ util::Status Builder::DecompileCharsMap(absl::string_view blob,
 // static
 util::Status Builder::GetPrecompiledCharsMap(absl::string_view name,
                                              std::string *output) {
-  CHECK_OR_RETURN(output);
+  RET_CHECK(output);
 
   if (name == "identity") {
     output->clear();
@@ -620,7 +620,7 @@ util::Status Builder::BuildNFD_CFMap(CharsMap *chars_map) {
 util::Status Builder::LoadCharsMap(absl::string_view filename,
                                    CharsMap *chars_map) {
   LOG(INFO) << "Loading mapping file: " << filename.data();
-  CHECK_OR_RETURN(chars_map);
+  RET_CHECK(chars_map);
 
   auto input = filesystem::NewReadableFile(filename);
 
@@ -644,7 +644,7 @@ util::Status Builder::LoadCharsMap(absl::string_view filename,
       absl::ConsumePrefix(&s, "U+");
       trg.push_back(string_util::HexToInt<char32>(s));
     }
-    CHECK_OR_RETURN(!src.empty());
+    RET_CHECK(!src.empty());
     (*chars_map)[src] = trg;
   }
 
@@ -683,7 +683,7 @@ util::Status Builder::SaveCharsMap(absl::string_view filename,
 
 // static
 util::Status Builder::RemoveRedundantMap(CharsMap *chars_map) {
-  CHECK_OR_RETURN(chars_map);
+  RET_CHECK(chars_map);
 
   CharsMap new_chars_map;
   size_t max_len = 0;
@@ -693,7 +693,7 @@ util::Status Builder::RemoveRedundantMap(CharsMap *chars_map) {
       new_chars_map.insert(p);
     }
   }
-  CHECK_GT_OR_RETURN(max_len, 0);
+  RET_CHECK_GT(max_len, 0);
 
   // Checks whether the rules with size of `len` can be normalized by
   // the rules with size of [1 .. len - 1].
@@ -708,7 +708,7 @@ util::Status Builder::RemoveRedundantMap(CharsMap *chars_map) {
 
   // Verify all characters in `chars_map` are normalized by `new_chars_map`.
   for (const auto &p : *chars_map) {
-    CHECK_EQ_OR_RETURN(p.second, Normalize(new_chars_map, p.first, max_len));
+    RET_CHECK_EQ(p.second, Normalize(new_chars_map, p.first, max_len));
   }
 
   *chars_map = std::move(new_chars_map);
