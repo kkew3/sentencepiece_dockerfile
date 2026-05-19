@@ -1,6 +1,8 @@
 FROM alpine:3.23 AS build
 
 RUN apk add --no-cache \
+    linux-headers \
+    git \
     cmake \
     make \
     g++ \
