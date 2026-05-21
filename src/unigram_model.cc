@@ -1013,6 +1013,7 @@ EncodeResult Model::EncodeOptimized(absl::string_view normalized) const {
   }
   // Backtrack to identify the best path.
   EncodeResult results;
+  results.reserve(size / 4 + 1);
   int ends_at = size;
   while (ends_at > 0) {
     const auto &node = best_path_ends_at[ends_at];

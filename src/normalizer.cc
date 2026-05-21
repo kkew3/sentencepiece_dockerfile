@@ -103,7 +103,7 @@ util::Status Normalizer::Normalize(absl::string_view input,
   }
 
   // Reserves the output buffer to avoid re-allocations.
-  const size_t kReservedSize = input.size() * 3;
+  const size_t kReservedSize = input.size() * 1.5;
   normalized->reserve(kReservedSize);
   if (norm_to_orig) norm_to_orig->reserve(kReservedSize);
 
@@ -191,14 +191,12 @@ std::string Normalizer::Normalize(absl::string_view input) const {
 
 std::pair<absl::string_view, int> Normalizer::NormalizePrefix(
     absl::string_view input) const {
-  std::pair<absl::string_view, int> result;
-
-  if (input.empty()) return result;
+  if (input.empty()) return {};
 
   if (matcher_ != nullptr) {
     bool found = false;
     const int mblen = matcher_->PrefixMatch(input, &found);
-    if (found) return std::make_pair(input.substr(0, mblen), mblen);
+    if (found) return {input.substr(0, mblen), mblen};
   }
 
   size_t longest_length = 0;
@@ -225,6 +223,7 @@ std::pair<absl::string_view, int> Normalizer::NormalizePrefix(
     }
   }
 
+  std::pair<absl::string_view, int> result;
   if (longest_length == 0 || longest_length > input.size() ||
       longest_value >= normalized_.size()) {
     size_t length = 0;
@@ -234,8 +233,8 @@ std::pair<absl::string_view, int> Normalizer::NormalizePrefix(
       // which is a valid Unicode of three bytes in utf8,
       // but here we only consume one byte.
       result.second = 1;
-      static const char kReplacementChar[] = "\xEF\xBF\xBD";
-      result.first = absl::string_view(kReplacementChar);
+      static constexpr absl::string_view kReplacementChar = "\xEF\xBF\xBD";
+      result.first = kReplacementChar;
     } else {
       result.second = length;
       result.first = absl::string_view(input.data(), result.second);

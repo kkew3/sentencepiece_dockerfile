@@ -81,9 +81,44 @@ int ToSwigError(sentencepiece::util::StatusCode code) {
   return SWIG_RuntimeError;
 }
 
+#ifndef Py_GIL_DISABLED
+// RAII class to release GIL.
+// Release GIL in contractor and acquire GIL in destractor.
+class ScopedGILRelease {
+public:
+  ScopedGILRelease() { save_ = PyEval_SaveThread(); }
+  ~ScopedGILRelease() { PyEval_RestoreThread(save_); }
+private:
+  PyThreadState *save_;
+};
+
+// RAII class to aquire GIL.
+// Acquire GIL in contractor and release GIL in destractor.
+class ScopedGILAcquire {
+public:
+  ScopedGILAcquire() { state_ = PyGILState_Ensure(); }
+  ~ScopedGILAcquire() { PyGILState_Release(state_); }
+private:
+  PyGILState_STATE state_;
+};
+#else
+class ScopedGILRelease {
+public:
+  ScopedGILRelease() {}
+  ~ScopedGILRelease() {}
+};
+
+class ScopedGILAcquire {
+public:
+  ScopedGILAcquire() {}
+  ~ScopedGILAcquire() {}
+};
+#endif  // Py_GIL_DISABLED
+
 class PySentenceIterator : public sentencepiece::SentenceIterator {
   public:
   PySentenceIterator(PyObject *iter) : iter_(iter) {
+    ScopedGILAcquire aquire;
     item_ = PyIter_Next(iter_);
     CopyValue();
   }
@@ -97,6 +132,7 @@ class PySentenceIterator : public sentencepiece::SentenceIterator {
   }
 
   void Next() override {
+    ScopedGILAcquire aquire;
     item_ = PyIter_Next(iter_);
     CopyValue();
   }
@@ -294,7 +330,10 @@ inline void InitNumThreads(const std::vector<T> &ins, int *num_threads) {
 
 %exception {
   try {
-    $action
+    {
+      ScopedGILRelease release;
+      $action
+    }
     ReleaseResultObject(resultobj);
   }
   catch (const sentencepiece::util::Status &status) {
@@ -355,6 +394,7 @@ inline void InitNumThreads(const std::vector<T> &ins, int *num_threads) {
 
 %ignore sentencepiece::SentencePieceProcessor::model_proto;
 %ignore sentencepiece::SentencePieceProcessor::mutable_normalizer_spec;
+%ignore sentencepiece::SentencePieceProcessor::SafeIdToPiece;
 %ignore sentencepiece::SentencePieceProcessor::Load;
 %ignore sentencepiece::SentencePieceProcessor::LoadOrDie;
 %ignore sentencepiece::SentencePieceProcessor::SetModel;

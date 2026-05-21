@@ -49,13 +49,11 @@ absl::string_view ModelInterface::pad_piece() const {
 #undef RETURN_PIECE
 
 int ModelInterface::PieceToId(absl::string_view piece) const {
-  auto it = reserved_id_map_.find(piece);
-  if (it != reserved_id_map_.end()) {
+  if (auto it = reserved_id_map_.find(piece); it != reserved_id_map_.end()) {
     return it->second;
   }
-  auto it2 = pieces_.find(piece);
-  if (it2 != pieces_.end()) {
-    return it2->second;
+  if (auto it = pieces_.find(piece); it != pieces_.end()) {
+    return it->second;
   }
   return unk_id_;
 }
@@ -160,7 +158,7 @@ std::vector<absl::string_view> SplitIntoWords(absl::string_view text,
   const char *end = text.data() + text.size();
 
   // Space symbol (U+2581)
-  const absl::string_view kSpaceSymbol = "\xe2\x96\x81";
+  constexpr absl::string_view kSpaceSymbol = "\xe2\x96\x81";
   bool in_ws_sequence = false;
 
   std::vector<absl::string_view> result;
@@ -223,12 +221,12 @@ int PieceToByte(absl::string_view piece) {
     }
     return m;
   }();
-  const auto it = kMap->find(piece);
-  if (it == kMap->end()) {
-    return -1;
-  } else {
+
+  if (const auto it = kMap->find(piece); it != kMap->end()) {
     return it->second;
   }
+
+  return -1;
 }
 
 }  // namespace sentencepiece

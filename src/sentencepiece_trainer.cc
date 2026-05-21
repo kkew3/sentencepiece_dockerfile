@@ -134,9 +134,7 @@ util::Status SentencePieceTrainer::MergeSpecsFromArgs(
   RET_CHECK(normalizer_spec) << "`normalizer_spec` must not be null.";
   RET_CHECK(denormalizer_spec) << "`denormalizer_spec` must not be null.";
 
-  for (const auto &it : kwargs) {
-    const auto &key = it.first;
-    const auto &value = it.second;
+  for (const auto &[key, value] : kwargs) {
     // Exceptions.
     if (key == "normalization_rule_name") {
       normalizer_spec->set_name(value);

@@ -53,8 +53,11 @@ if (SPM_PROTOBUF_PROVIDER STREQUAL "internal")
     ${CMAKE_CURRENT_SOURCE_DIR}/../third_party/protobuf-lite/zero_copy_stream.cc
     ${CMAKE_CURRENT_SOURCE_DIR}/../third_party/protobuf-lite/zero_copy_stream_impl.cc
     ${CMAKE_CURRENT_SOURCE_DIR}/../third_party/protobuf-lite/zero_copy_stream_impl_lite.cc)
-  if (WIN32)
+  if (MSVC)
     add_definitions("/DHAVE_PTHREAD /wd4018 /wd4514")
+  elseif (WIN32)
+    # Windows but not cl.exe (e.g. Clang targeting *-pc-windows-msvc, MinGW).
+    add_definitions("-DHAVE_PTHREAD=1 -Wno-sign-compare -Wno-deprecated-declarations")
   else()
     add_definitions("-pthread -DHAVE_PTHREAD=1 -Wno-sign-compare -Wno-deprecated-declarations")
   endif()

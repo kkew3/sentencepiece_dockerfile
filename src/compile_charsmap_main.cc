@@ -73,7 +73,7 @@ std::string ToHexUInt64Array(
 std::string ToHexData(absl::string_view data) {
   const char *begin = data.data();
   const char *end = data.data() + data.size();
-  constexpr char kHex[] = "0123456789ABCDEF";
+  constexpr absl::string_view kHex = "0123456789ABCDEF";
   constexpr size_t kNumOfBytesOnOneLine = 20;
 
   size_t output_count = 0;

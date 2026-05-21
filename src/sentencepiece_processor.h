@@ -394,7 +394,7 @@ class SentencePieceProcessor {
   // Given a UTF8 input, encodes it into SentencePieceText.
   //
   // When using these APIs, sentencepiece.pb.h header files must be included.
-  // We can also use ImutableSentencePieceText as follows.
+  // We can also use ImmutableSentencePieceText as follows.
   //
   // ImmutableSentencePieceText spt;
   // Encode("hello", spt.mutable_proto()).IgnoreError();
@@ -644,6 +644,10 @@ class SentencePieceProcessor {
 
   // Returns the string representation of vocab with `id`.
   virtual const std::string &IdToPiece(int id) const;
+
+  // Returns the string representation of vocab with `id`.
+  // Returns false when id is out of range.
+  virtual bool SafeIdToPiece(int id, std::string *piece) const;
 
   // Returns the score of `id`.
   // Usually score is an emission log probability of unigram language
