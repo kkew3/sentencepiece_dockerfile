@@ -247,31 +247,6 @@ inline void ConvertToUnicodeSpans(sentencepiece::ImmutableNBestSentencePieceText
   proto->ConvertToUnicodeSpans();
 }
 
-class ThreadPool {
- public:
-  explicit ThreadPool(size_t request_size) :
-    request_size_(request_size) {}
-
-  virtual ~ThreadPool() {
-    for (auto &task : tasks_) {
-      task.join();
-    }
-  }
-
-  void Schedule(std::function<void()> closure) {
-    static constexpr size_t kMinThreadSize = 2;
-    if (request_size_ < kMinThreadSize) {
-      closure();
-    } else {
-      tasks_.emplace_back(closure);
-    }
-  }
-
- private:
-  size_t request_size_ = 0;
-  std::vector<std::thread> tasks_;
-};
-
 template <typename T>
 inline void InitNumThreads(const std::vector<T> &ins, int *num_threads) {
   if (*num_threads < 0) {
@@ -286,7 +261,7 @@ inline void InitNumThreads(const std::vector<T> &ins, int *num_threads) {
   std::vector<OutType> outs(ins.size());                                \
   InitNumThreads(ins, &num_threads);                                    \
   {                                                                     \
-    ThreadPool pool(ins.size());                                        \
+    sentencepiece::ThreadPool pool(num_threads);                        \
     std::atomic<size_t> index = 0;                                      \
     for (int n = 0;  n < num_threads; ++n) {                            \
       pool.Schedule([&]() {                                             \
@@ -311,7 +286,7 @@ inline void InitNumThreads(const std::vector<T> &ins, int *num_threads) {
   InitNumThreads(ins, &num_threads);                                    \
   {                                                                     \
     std::atomic<size_t> index = 0;                                      \
-    ThreadPool pool(ins.size());                                        \
+    sentencepiece::ThreadPool pool(num_threads);                        \
     for (int n = 0;  n < num_threads; ++n) {                            \
       pool.Schedule([&]() {                                             \
           size_t i = 0;                                                 \
@@ -351,6 +326,7 @@ inline void InitNumThreads(const std::vector<T> &ins, int *num_threads) {
 %ignore sentencepiece::NormalizerSpec;
 %ignore sentencepiece::TrainerSpec;
 %ignore sentencepiece::SentencePieceProcessor::status;
+%ignore sentencepiece::ThreadPool;
 %ignore sentencepiece::ImmutableSentencePieceText::mutable_proto;
 %ignore sentencepiece::ImmutableSentencePieceText::pieces() const;
 %ignore sentencepiece::ImmutableSentencePieceText::ConvertToUnicodeSpans;
@@ -388,6 +364,10 @@ inline void InitNumThreads(const std::vector<T> &ins, int *num_threads) {
 %ignore sentencepiece::SentencePieceProcessor::SampleEncodeAndScoreAsImmutableProto;
 %ignore sentencepiece::SentencePieceProcessor::DecodePiecesAsImmutableProto;
 %ignore sentencepiece::SentencePieceProcessor::DecodeIdsAsImmutableProto;
+
+%ignore sentencepiece::SentencePieceProcessor::ParallelEncode;
+%ignore sentencepiece::SentencePieceProcessor::ParallelEncodeAsIds;
+%ignore sentencepiece::SentencePieceProcessor::ParallelEncodeAsPieces;
 
 %ignore sentencepiece::SentencePieceProcessor::Normalize;
 %ignore sentencepiece::SentencePieceProcessor::NormalizeWithOffsets;
@@ -736,7 +716,7 @@ inline void InitNumThreads(const std::vector<T> &ins, int *num_threads) {
     std::vector<float> outs(ins.size());
     InitNumThreads(ins, &num_threads);
     {
-      ThreadPool pool(ins.size());
+      sentencepiece::ThreadPool pool(num_threads);
       std::atomic<size_t> index = 0;
       for (int n = 0;  n < num_threads; ++n) {
         pool.Schedule([&]() {

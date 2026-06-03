@@ -20,6 +20,7 @@ import io
 import os
 import pickle
 import sys
+import tempfile
 import threading
 import unittest
 import sentencepiece as spm
@@ -626,6 +627,31 @@ class TestSentencepieceProcessor(unittest.TestCase):
           enable_sampling=False,
       )
       self.assertEqual(len(out), 2)
+
+  def test_word_model_user_defined_symbol(self):
+    with tempfile.TemporaryDirectory() as work_dir:
+      input_file = os.path.join(work_dir, 'input.txt')
+      model_prefix = os.path.join(work_dir, 'word_model')
+      with open(input_file, 'w', encoding='utf-8') as f:
+        f.write('hello . world\n')
+        f.write('hello . test\n')
+
+      spm.SentencePieceTrainer.train(
+          input=input_file,
+          model_prefix=model_prefix,
+          model_type='word',
+          vocab_size=8,
+          hard_vocab_limit=False,
+          normalization_rule_name='identity',
+          user_defined_symbols=['.'],
+          bos_id=-1,
+          eos_id=-1,
+      )
+
+      sp = spm.SentencePieceProcessor(model_file=model_prefix + '.model')
+      pieces = sp.encode('hello . world', out_type=str)
+
+      self.assertEqual(['▁hello', '▁.', '▁world'], pieces)
 
   def test_nbest(self):
     sp = self.sp_

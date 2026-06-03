@@ -208,12 +208,19 @@ std::vector<absl::string_view> SplitIntoWords(absl::string_view text,
   return result;
 }
 
-std::string ByteToPiece(unsigned char c) {
-  return absl::StrFormat("<0x%02X>", c);
+const std::string &ByteToPiece(unsigned char c) {
+  static const std::vector<std::string> *const kBytePieces = []() {
+    auto *v = new std::vector<std::string>(256);
+    for (int i = 0; i < 256; ++i) {
+      (*v)[i] = absl::StrFormat("<0x%02X>", i);
+    }
+    return v;
+  }();
+  return (*kBytePieces)[c];
 }
 
 int PieceToByte(absl::string_view piece) {
-  using PieceToByteMap = absl::flat_hash_map<std::string, unsigned char>;
+  using PieceToByteMap = absl::flat_hash_map<absl::string_view, unsigned char>;
   static const auto *const kMap = []() -> PieceToByteMap * {
     auto *m = new PieceToByteMap();
     for (int i = 0; i < 256; ++i) {

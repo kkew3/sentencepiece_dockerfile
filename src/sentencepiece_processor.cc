@@ -30,6 +30,7 @@
 #include "model_interface.h"
 #include "normalizer.h"
 #include "sentencepiece.pb.h"
+#include "third_party/absl/cleanup/cleanup.h"
 #include "third_party/absl/strings/numbers.h"
 #include "third_party/absl/strings/str_cat.h"
 #include "third_party/absl/strings/str_join.h"
@@ -37,6 +38,8 @@
 #include "third_party/absl/strings/str_split.h"
 #include "third_party/absl/strings/string_view.h"
 #include "third_party/absl/strings/strip.h"
+#include "third_party/absl/synchronization/blocking_counter.h"
+#include "third_party/absl/synchronization/mutex.h"
 #include "unigram_model.h"
 #include "util.h"
 
@@ -61,6 +64,9 @@ constexpr absl::string_view kDefaultUnknownSymbol = " \xE2\x81\x87 ";
 
 // REPLACEMENT CHARACTER (U+FFFD) in UTF-8.
 constexpr absl::string_view kReplacementCharacter = "\xef\xbf\xbd";
+
+// maximum nbest or sampling size.
+constexpr int kMaxNBestSize = 512;
 
 std::vector<absl::string_view> ToPieceArray(const std::vector<std::string> &v) {
   std::vector<absl::string_view> out(v.size());
@@ -309,6 +315,7 @@ util::Status SentencePieceProcessor::status() const {
 
 util::Status SentencePieceProcessor::SetVocabulary(
     const std::vector<absl::string_view> &valid_vocab) {
+  LOG(WARNING) << "SetVocabulary will be deprecated in v0.2.3";
   RETURN_IF_ERROR(status());
 
   // TODO(taku): supports vocabulary constraint in BPE model.
@@ -339,6 +346,7 @@ util::Status SentencePieceProcessor::SetVocabulary(
 }
 
 util::Status SentencePieceProcessor::ResetVocabulary() {
+  LOG(WARNING) << "ResetVocabulary will be deprecated in v0.2.3";
   RETURN_IF_ERROR(status());
   for (auto &piece : *(model_proto_->mutable_pieces())) {
     if (piece.type() == ModelProto::SentencePiece::UNUSED)
@@ -350,6 +358,7 @@ util::Status SentencePieceProcessor::ResetVocabulary() {
 
 util::Status SentencePieceProcessor::LoadVocabulary(absl::string_view filename,
                                                     int threshold) {
+  LOG(WARNING) << "LoadVocabulary will be deprecated in v0.2.3";
   auto input = filesystem::NewReadableFile(filename);
   RETURN_IF_ERROR(input->status());
 
@@ -728,6 +737,9 @@ util::Status SentencePieceProcessor::NBestEncode(
     NBestSentencePieceText *nbest_spt) const {
   RET_CHECK_STATUS_PROTO(nbest_spt);
 
+  RET_CHECK_LE(nbest_size, kMaxNBestSize)
+      << "nbest_size must be nbest_size <= " << kMaxNBestSize;
+
   std::string normalized;
   std::vector<size_t> norm_to_orig;
   RETURN_IF_ERROR(normalizer_->Normalize(input, &normalized, &norm_to_orig));
@@ -753,7 +765,10 @@ util::Status SentencePieceProcessor::SampleEncode(
     SentencePieceText *spt) const {
   RET_CHECK_STATUS_PROTO(spt);
 
-  RET_CHECK_LE(nbest_size, 512) << "nbest_size must be nbest_size <= 512";
+  RET_CHECK(!std::isnan(alpha));
+  RET_CHECK_GE(alpha, 0.0);
+  RET_CHECK_LE(nbest_size, kMaxNBestSize)
+      << "nbest_size must be nbest_size <= " << kMaxNBestSize;
 
   std::string normalized;
   std::vector<size_t> norm_to_orig;
@@ -797,6 +812,12 @@ util::Status SentencePieceProcessor::SampleEncode(
 util::Status SentencePieceProcessor::SampleEncodeAndScore(
     absl::string_view input, int samples, float alpha, bool wor,
     bool include_best, NBestSentencePieceText *samples_spt) const {
+  RET_CHECK(!std::isnan(alpha));
+  RET_CHECK_GE(alpha, 0.0);
+  RET_CHECK_GE(samples, 0);
+  RET_CHECK_LE(samples, kMaxNBestSize)
+      << "samples must be nbest_size <= " << kMaxNBestSize;
+
   RET_CHECK(model_->IsSampleEncodeAndScoreAvailable())
       << "SampleEncodeAndScore is not available for the current model.";
   std::string normalized;
@@ -820,6 +841,8 @@ util::Status SentencePieceProcessor::SampleEncodeAndScore(
 util::Status SentencePieceProcessor::CalculateEntropy(absl::string_view input,
                                                       float alpha,
                                                       float *entropy) const {
+  RET_CHECK(!std::isnan(alpha));
+  RET_CHECK_GE(alpha, 0.0);
   RET_CHECK(model_->IsCalculateEntropyAvailable())
       << "CalculateEntropy is not available for the current model.";
   std::string normalized;
@@ -995,6 +1018,374 @@ util::Status SentencePieceProcessor::Decode(const std::vector<int> &ids,
     pieces.emplace_back(IdToPiece(id));
   }
   return Decode(pieces, spt);
+}
+
+namespace {
+
+void GetIthChunkBoundaries(
+    const string_util::UnicodeText &input_unicode,
+    const std::vector<uint32_t> &utf8_offsets, const size_t chunk_len,
+    const size_t i, const size_t overlap,
+    std::tuple<size_t, size_t, size_t> &chunk_boundaries) {
+  const size_t unicode_start_offset = i * chunk_len;
+  const size_t unicode_end_offset =
+      std::min<size_t>((i + 1) * chunk_len, input_unicode.size());
+  const size_t unicode_overlap_offset =
+      std::min<size_t>((i + 1) * chunk_len + overlap, input_unicode.size());
+  const size_t start_index = utf8_offsets[unicode_start_offset];
+  const size_t end_index = utf8_offsets[unicode_end_offset];
+  const size_t overlap_index = utf8_offsets[unicode_overlap_offset];
+  chunk_boundaries = {start_index, end_index, overlap_index};
+}
+
+void GetChunkOfInput(const string_util::UnicodeText &input_unicode,
+                     const absl::string_view input,
+                     const absl::string_view normalized,
+                     const std::vector<size_t> &norm_to_orig,
+                     const std::tuple<size_t, size_t, size_t> &chunk_boundaries,
+                     absl::string_view &input_chunk,
+                     absl::string_view &normalized_chunk,
+                     std::vector<size_t> &norm_to_orig_chunk) {
+  const size_t start_index = std::get<0>(chunk_boundaries);
+  const size_t overlap_index = std::get<2>(chunk_boundaries);
+  input_chunk = input.substr(start_index, overlap_index - start_index);
+
+  auto normalized_start_it =
+      std::lower_bound(norm_to_orig.begin(), norm_to_orig.end(), start_index);
+  const int normalized_start_index =
+      (normalized_start_it - norm_to_orig.begin());
+
+  auto normalized_end_it =
+      std::upper_bound(normalized_start_it, norm_to_orig.end(), overlap_index);
+  const int normalized_end_index =
+      (normalized_end_it - norm_to_orig.begin()) - 1;
+  normalized_chunk =
+      absl::ClippedSubstr(normalized, normalized_start_index,
+                          normalized_end_index - normalized_start_index);
+  norm_to_orig_chunk = std::vector<size_t>(
+      norm_to_orig.begin() +
+          std::min<int>(normalized_start_index, norm_to_orig.size()),
+      (norm_to_orig.begin() +
+       std::min<int>(normalized_end_index + 1, norm_to_orig.size())));
+  for (auto &it : norm_to_orig_chunk) {
+    it = it - start_index;
+  }
+}
+
+bool FindMatchingToken(const SentencePieceText_SentencePiece &current_piece,
+                       const SentencePieceText &next_chunk, size_t chunk_len,
+                       int unk_id, size_t *start_index_in_next_chunk) {
+  bool found_matching_token = false;
+
+  // Two tokens match if:
+  //   - They have the same surface form and same start and end indices.
+  //   - They are both UNK and overlap.
+  // Note that we only match non zero-width tokens, to avoid matching dummy WS
+  // and byte tokens.
+  for (const auto &other_piece : next_chunk.pieces()) {
+    if ((other_piece.id() == current_piece.id() &&
+         other_piece.begin() + chunk_len == current_piece.begin() &&
+         other_piece.end() + chunk_len == current_piece.end()) ||
+        (current_piece.id() == static_cast<uint32_t>(unk_id) &&
+         other_piece.id() == static_cast<uint32_t>(unk_id) &&
+         other_piece.begin() <= current_piece.end() - chunk_len &&
+         current_piece.end() - chunk_len <= other_piece.end())) {
+      if (current_piece.begin() != current_piece.end()) {
+        found_matching_token = true;
+        *start_index_in_next_chunk = other_piece.end();
+        break;
+      } else if (other_piece.begin() + chunk_len > current_piece.end()) {
+        // No potential matching piece. Terminate the search.
+        break;
+      }
+    }
+  }
+
+  return found_matching_token;
+}
+
+ABSL_ATTRIBUTE_COLD util::Status ReparseBadRanges(
+    const std::vector<size_t> &bad_joins,
+    const string_util::UnicodeText &input_unicode,
+    const absl::string_view input, const absl::string_view normalized,
+    const std::vector<size_t> &norm_to_orig, Arena &arena,
+    const ModelInterface &model,
+    std::function<
+        util::Status(absl::string_view input, absl::string_view normalized,
+                     const std::vector<size_t> &norm_to_orig,
+                     const EncodeResult &result, SentencePieceText *spt)>
+        populate_sentence_piece_text,
+    std::vector<SentencePieceText *> &spt_chunks,
+    std::vector<std::tuple<size_t, size_t, size_t>> &input_chunk_boundaries) {
+  // Convert bad joins into bad join ranges.
+  // A bad join range is a contiguous sequence of chunks where none of
+  // them joined together successfully.
+  std::vector<std::pair<size_t, size_t>> bad_join_ranges;
+  for (size_t i : bad_joins) {
+    // Error at i means that i-1 and i don't work together.
+    if (bad_join_ranges.empty() || bad_join_ranges.back().second < i) {
+      bad_join_ranges.push_back(std::make_pair(i, i + 1));
+    } else {
+      bad_join_ranges.back().second = i + 1;
+    }
+  }
+
+  // This means that we need to reparse the whole string.
+  if (bad_joins.empty()) {
+    bad_join_ranges.emplace_back(0, spt_chunks.size() - 1);
+  }
+
+  // For each bad range, we're going to merge the text and re-encode it.
+  std::vector<SentencePieceText *> new_spt_chunks;
+  std::vector<std::tuple<size_t, size_t, size_t>> new_boundaries_list;
+  size_t old_index = 0;
+  for (const auto &range : bad_join_ranges) {
+    // Copy over things that are unchanged.
+    for (; old_index < range.first; ++old_index) {
+      new_spt_chunks.push_back(spt_chunks[old_index]);
+      new_boundaries_list.push_back(input_chunk_boundaries[old_index]);
+    }
+
+    // Create new boundaries that encompass all of the chunks in the bad
+    // joins range.
+    const size_t first_chunk_start =
+        std::get<0>(input_chunk_boundaries[range.first]);
+    const size_t last_chunk_end =
+        std::get<1>(input_chunk_boundaries[range.second]);
+    const size_t last_chunk_overlap =
+        std::get<2>(input_chunk_boundaries[range.second]);
+    std::tuple<size_t, size_t, size_t> new_boundaries = {
+        first_chunk_start, last_chunk_end, last_chunk_overlap};
+
+    absl::string_view input_chunk;
+    absl::string_view normalized_chunk;
+    std::vector<size_t> norm_to_orig_chunk;
+
+    // Fetch text for this new larger chunk.
+    GetChunkOfInput(input_unicode, input, normalized, norm_to_orig,
+                    new_boundaries, input_chunk, normalized_chunk,
+                    norm_to_orig_chunk);
+    auto encode_result = model.Encode(normalized_chunk);
+    auto *new_chunk = arena.Create<SentencePieceText>(&arena);
+    RETURN_IF_ERROR(populate_sentence_piece_text(input_chunk, normalized_chunk,
+                                                 norm_to_orig_chunk,
+                                                 encode_result, new_chunk));
+
+    // Insert the new chunk and new boundaries.
+    new_spt_chunks.push_back(new_chunk);
+    new_boundaries_list.push_back(new_boundaries);
+    // Skip forward past all of the chunks we just merged.
+    old_index = range.second + 1;
+  }
+
+  // Add any remaining chunks from after the last bad range.
+  for (; old_index < spt_chunks.size(); ++old_index) {
+    new_spt_chunks.push_back(spt_chunks[old_index]);
+    new_boundaries_list.push_back(input_chunk_boundaries[old_index]);
+  }
+
+  // Update spt_chunks and boundaries to the new merged list.
+  spt_chunks = std::move(new_spt_chunks);
+  input_chunk_boundaries = std::move(new_boundaries_list);
+
+  return util::OkStatus();
+}
+
+}  // namespace
+
+util::Status SentencePieceProcessor::ParallelEncodeInternal(
+    absl::string_view input, size_t chunk_len, ThreadPool &thread_pool,
+    std::vector<std::string> *pieces, std::vector<int> *ids,
+    SentencePieceText *spt) const {
+  if (input.empty()) return util::OkStatus();
+  if (input.size() > std::numeric_limits<uint32_t>::max()) {
+    return util::InvalidArgumentError(
+        absl::StrCat("Input larger than ", std::numeric_limits<uint32_t>::max(),
+                     " bytes is not supported."));
+  }
+
+  string_util::UnicodeTextAndOffsets unicode_text_and_offset =
+      string_util::UTF8ToUnicodeTextAndOffsets(input);
+  const string_util::UnicodeText &input_unicode =
+      unicode_text_and_offset.unicode_text;
+  const std::vector<uint32_t> &utf8_offsets = unicode_text_and_offset.offsets;
+
+  std::string normalized;
+  std::vector<size_t> norm_to_orig;
+  RETURN_IF_ERROR(normalizer_->Normalize(input, &normalized, &norm_to_orig));
+
+  // Set the overlap to be 2x the maximum piece length.
+  size_t overlap = model_proto().trainer_spec().max_sentencepiece_length() * 2;
+  size_t num_chunks = (input_unicode.size() + chunk_len - 1) / chunk_len;
+
+  // Split unnormalized input into chunks, and then map those to chunks in the
+  // normalized text.
+  // Boundaries are (start, end, overlap); all are indices into the
+  // utf8_offsets vector.
+  std::vector<std::tuple<size_t, size_t, size_t>> input_chunk_boundaries(
+      num_chunks);
+
+  std::vector<SentencePieceText *> spt_chunks;
+  spt_chunks.resize(num_chunks);
+  Arena arena;
+
+  // Create thread-local arenas to avoid lock contention on the main arena
+  // during parallel encoding.
+  std::vector<std::unique_ptr<Arena>> thread_arenas(thread_pool.num_threads());
+  for (auto &thread_arena : thread_arenas) {
+    thread_arena = std::make_unique<Arena>();
+  }
+
+  const bool create_own_spt = spt == nullptr;
+  if (create_own_spt) {
+    spt = arena.Create<SentencePieceText>(&arena);
+  }
+  absl::Cleanup cleanup = [create_own_spt, &spt] {
+    if (create_own_spt) {
+      spt = nullptr;
+    }
+  };
+
+  {
+    absl::BlockingCounter barrier(thread_pool.num_threads());
+    absl::Mutex status_mutex;
+    util::Status encoding_status;
+    for (size_t n = 0; n < thread_pool.num_threads(); ++n) {
+      thread_pool.Schedule([&, n]() {
+        Arena *thread_arena = thread_arenas[n].get();
+        for (size_t i = n; i < num_chunks; i += thread_pool.num_threads()) {
+          absl::string_view input_chunk;
+          absl::string_view normalized_chunk;
+          std::vector<size_t> norm_to_orig_chunk;
+          GetIthChunkBoundaries(input_unicode, utf8_offsets, chunk_len, i,
+                                overlap, input_chunk_boundaries[i]);
+          GetChunkOfInput(input_unicode, input, normalized, norm_to_orig,
+                          input_chunk_boundaries[i], input_chunk,
+                          normalized_chunk, norm_to_orig_chunk);
+
+          auto encode_result = model_->Encode(normalized_chunk);
+          spt_chunks[i] = thread_arena->Create<SentencePieceText>(thread_arena);
+          auto status = PopulateSentencePieceText(
+              input_chunk, normalized_chunk, norm_to_orig_chunk, encode_result,
+              spt_chunks[i], /*skip_surface=*/true);
+          // Can be optimized to cancel all other threads but then it would be
+          // better to switch to absl::StatusBundle..
+          if (!status.ok()) {
+            absl::MutexLock lock(status_mutex);
+            encoding_status = status;
+          }
+        }
+        barrier.DecrementCount();
+      });
+    }
+
+    barrier.Wait();
+    // Note: This needs to be after the barrier.Wait() call resolves, since the
+    // threads may still be running (and updating the status).
+    RETURN_IF_ERROR(encoding_status);
+  }
+
+  // Now stitch the chunks together.
+  // Given two consecutive chunks A and B, we want to find the first token in A
+  // that is also a full token in B. At this point, we terminate iterating over
+  // chunk A and start iterating over chunk B, starting at this known good
+  // position.
+  for (int loops = 0;; ++loops) {
+    size_t start_of_good_tokens = 0;
+    std::vector<size_t> bad_joins;
+    spt->clear_pieces();
+    if (pieces != nullptr) pieces->clear();
+    if (ids != nullptr) ids->clear();
+    for (size_t i = 0; i < spt_chunks.size(); ++i) {
+      const size_t this_chunk_len = (std::get<1>(input_chunk_boundaries[i]) -
+                                     std::get<0>(input_chunk_boundaries[i]));
+      bool found_matching_token = false;
+      for (const auto &piece : spt_chunks[i]->pieces()) {
+        // Ignore tokens at the truncated beginning or pieces that don't
+        // correspond to anything in the surface (these are often dummy WS).
+        if (piece.begin() < start_of_good_tokens ||
+            // This checks for dummy WS at the start of a piece.
+            // We don't match 0 width byte pieces so this is fine.
+            (i > 0 && piece.begin() == 0 && piece.begin() == piece.end())) {
+          continue;
+        }
+
+        // Add pieces from the chunk. If the piece ends in the overlap, check
+        // for a match in the next chunk.
+        if (pieces != nullptr) pieces->emplace_back(piece.piece());
+        if (ids != nullptr) ids->emplace_back(piece.id());
+        auto sp = spt->add_pieces();
+        sp->set_piece(piece.piece());
+        sp->set_id(piece.id());
+        sp->set_begin(piece.begin() + std::get<0>(input_chunk_boundaries[i]));
+        sp->set_end(piece.end() + std::get<0>(input_chunk_boundaries[i]));
+
+        // Try to find a matching token in the next chunk for this token.
+        // Don't match zero width pieces.
+        if (i < spt_chunks.size() - 1 && piece.begin() != piece.end() &&
+            piece.end() >= this_chunk_len) {
+          found_matching_token =
+              FindMatchingToken(piece, *spt_chunks[i + 1], this_chunk_len,
+                                unk_id(), &start_of_good_tokens);
+          if (found_matching_token) {
+            break;
+          }
+        }
+      }
+      if (!(found_matching_token || i == spt_chunks.size() - 1)) {
+        // These two chunks failed to merge together. We'll fix this later.
+        bad_joins.push_back(i);
+      }
+    }
+
+    // If all join results are good, we're done.
+    if (bad_joins.empty()) {
+      break;
+    }
+
+    constexpr int kMaxReparseLoops = 3;
+
+    if (loops >= kMaxReparseLoops) {
+      // This tells ReparseBadRanges to parse the whole string.
+      bad_joins.clear();
+    }
+
+    RETURN_IF_ERROR(ReparseBadRanges(
+        bad_joins, input_unicode, input, normalized, norm_to_orig, arena,
+        *model_,
+        [this](absl::string_view input, absl::string_view normalized,
+               const std::vector<size_t> &norm_to_orig,
+               const EncodeResult &result, SentencePieceText *spt) {
+          return PopulateSentencePieceText(input, normalized, norm_to_orig,
+                                           result, spt);
+        },
+        spt_chunks, input_chunk_boundaries));
+  }
+
+  return util::OkStatus();
+}
+
+util::Status SentencePieceProcessor::ParallelEncode(
+    absl::string_view input, int chunk_len, ThreadPool &thread_pool,
+    std::vector<std::string> *pieces) const {
+  std::vector<int> ids;
+  return ParallelEncodeInternal(input, chunk_len, thread_pool, pieces, &ids,
+                                nullptr);
+}
+
+util::Status SentencePieceProcessor::ParallelEncode(
+    absl::string_view input, int chunk_len, ThreadPool &thread_pool,
+    std::vector<int> *ids) const {
+  std::vector<std::string> pieces;
+  return ParallelEncodeInternal(input, chunk_len, thread_pool, &pieces, ids,
+                                nullptr);
+}
+
+util::Status SentencePieceProcessor::ParallelEncode(
+    absl::string_view input, int chunk_len, ThreadPool &thread_pool,
+    SentencePieceText *spt) const {
+  return ParallelEncodeInternal(input, chunk_len, thread_pool, nullptr, nullptr,
+                                spt);
 }
 
 #define RET_CHECK_OR_RETURN_DEFAULT(value)                                   \

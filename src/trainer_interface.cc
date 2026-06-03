@@ -35,6 +35,7 @@
 #include "third_party/absl/strings/str_cat.h"
 #include "third_party/absl/strings/str_format.h"
 #include "third_party/absl/strings/str_join.h"
+#include "third_party/absl/strings/match.h"
 #include "third_party/absl/strings/str_split.h"
 #include "unicode_script.h"
 #include "util.h"
@@ -434,7 +435,6 @@ END:
     RET_CHECK(!sentences_.empty());
     {
       auto pool = std::make_unique<ThreadPool>(trainer_spec_.num_threads());
-      pool->StartWorkers();
       for (int n = 0; n < trainer_spec_.num_threads(); ++n) {
         pool->Schedule([&, n]() {
           for (size_t i = n; i < sentences_.size();
@@ -460,6 +460,7 @@ END:
 
   // If DP is required, add the noise/clip the input.
   if (trainer_spec_.enable_differential_privacy()) {
+    LOG(WARNING) << "Differential privacy feature will be deprecated in v0.2.3";
     if (trainer_spec_.input_format() != "tsv") {
       LOG(ERROR)
           << "Dp version will not work correctly with text input format.";
@@ -481,7 +482,6 @@ END:
 
     {
       auto pool = std::make_unique<ThreadPool>(num_workers);
-      pool->StartWorkers();
       for (size_t n = 0; n < num_workers; ++n) {
         pool->Schedule([&, n]() {
           // One per thread generator.
@@ -798,6 +798,14 @@ util::Status TrainerInterface::InitMetaPieces() {
   for (const auto &w : trainer_spec_.user_defined_symbols()) {
     RETURN_IF_ERROR(
         insert_meta_symbol(w, ModelProto::SentencePiece::USER_DEFINED));
+    if (trainer_spec_.model_type() == TrainerSpec::WORD &&
+        normalizer_spec_.escape_whitespaces() &&
+        !absl::StartsWith(w, TrainerInterface::kWSStr)) {
+      // WORD model tokens include the escaped whitespace prefix.
+      RETURN_IF_ERROR(insert_meta_symbol(
+          absl::StrCat(TrainerInterface::kWSStr, w),
+          ModelProto::SentencePiece::USER_DEFINED));
+    }
   }
 
   if (trainer_spec_.byte_fallback()) {

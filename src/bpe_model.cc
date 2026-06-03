@@ -33,6 +33,65 @@
 
 namespace sentencepiece {
 namespace bpe {
+namespace {
+
+struct SymbolPair {
+  union {
+    float score;  // score of this pair. large is better.
+    int32_t int_score;
+  };
+  uint32_t left;      // left index of this pair
+  int right;          // right index of this pair
+  unsigned int size;  // length of this piece
+};
+
+class SymbolPairComparator {
+ public:
+  ABSL_ATTRIBUTE_ALWAYS_INLINE inline bool operator()(const SymbolPair &h1,
+                                                      const SymbolPair &h2) {
+    const int32_t i1 = h1.int_score;
+    const int32_t i2 = h2.int_score;
+
+    // Fast path for the common case where both scores are negative because
+    // they are log-probabilities.
+    // Note: we use the fact that IEEE 754 floating point format enables
+    // to compare the integer representation of negative floats which is
+    // cheaper than using float comparison. And it works the same way for
+    // little endian and big endian machines because the IEEE 754 format is
+    // aligned with the endianness.
+    // `(i1 & i2) < 0` is an efficient way to check `i1 < 0 && i2 < 0`.
+    if ((i1 & i2) < 0) {
+      // For negative floats, their integer representation order is the
+      // reverse of the float order. That is, for two negative floats f1, f2,
+      // f1 < f2 iff i1 > i2.
+      return (i1 > i2) || (i1 == i2 && h1.left > h2.left);
+    }
+
+    // Slow path for uncommon cases (mixed signs or both positive).
+    // Note: the comparison between NaN and +0 and +1 can be different than
+    // if we used float numbers but it should not influence the result.
+    bool score_less;
+    // If signs are different ((i1 ^ i2) < 0), the negative score is smaller.
+    if ((i1 ^ i2) < 0) {
+      score_less = i1 < 0;
+    } else {
+      // If signs are the same (and not both negative), they must both be
+      // non-negative. For non-negative floats, integer order is the same as
+      // float order.
+      score_less = i1 < i2;
+    }
+
+    return score_less || (i1 == i2 && h1.left > h2.left);
+  }
+};
+
+struct Symbol {
+  int prev;     // prev index of this symbol. -1 for BOS.
+  int next;     // next index of tihs symbol. -1 for EOS.
+  bool freeze;  // this symbol is never be merged.
+  absl::string_view piece;
+};
+}  // namespace
 
 Model::Model(const ModelProto &model_proto) {
   model_proto_ = &model_proto;
@@ -46,63 +105,6 @@ std::vector<std::pair<absl::string_view, int>> Model::SampleEncode(
   if (!status().ok() || normalized.empty()) {
     return {};
   }
-
-  struct SymbolPair {
-    union {
-      float score;  // score of this pair. large is better.
-      int32_t int_score;
-    };
-    uint32_t left;      // left index of this pair
-    int right;          // right index of this pair
-    unsigned int size;  // length of this piece
-  };
-
-  class SymbolPairComparator {
-   public:
-    ABSL_ATTRIBUTE_ALWAYS_INLINE inline bool operator()(const SymbolPair &h1,
-                                                        const SymbolPair &h2) {
-      const int32_t i1 = h1.int_score;
-      const int32_t i2 = h2.int_score;
-
-      // Fast path for the common case where both scores are negative because
-      // they are log-probabilities.
-      // Note: we use the fact that IEEE 754 floating point format enables
-      // to compare the integer representation of negative floats which is
-      // cheaper than using float comparison. And it works the same way for
-      // little endian and big endian machines because the IEEE 754 format is
-      // aligned with the endianness.
-      // `(i1 & i2) < 0` is an efficient way to check `i1 < 0 && i2 < 0`.
-      if ((i1 & i2) < 0) {
-        // For negative floats, their integer representation order is the
-        // reverse of the float order. That is, for two negative floats f1, f2,
-        // f1 < f2 iff i1 > i2.
-        return (i1 > i2) || (i1 == i2 && h1.left > h2.left);
-      }
-
-      // Slow path for uncommon cases (mixed signs or both positive).
-      // Note: the comparison between NaN and +0 and +1 can be different than
-      // if we used float numbers but it should not influence the result.
-      bool score_less;
-      // If signs are different ((i1 ^ i2) < 0), the negative score is smaller.
-      if ((i1 ^ i2) < 0) {
-        score_less = i1 < 0;
-      } else {
-        // If signs are the same (and not both negative), they must both be
-        // non-negative. For non-negative floats, integer order is the same as
-        // float order.
-        score_less = i1 < i2;
-      }
-
-      return score_less || (i1 == i2 && h1.left > h2.left);
-    }
-  };
-
-  struct Symbol {
-    int prev;     // prev index of this symbol. -1 for BOS.
-    int next;     // next index of tihs symbol. -1 for EOS.
-    bool freeze;  // this symbol is never be merged.
-    absl::string_view piece;
-  };
 
   std::vector<Symbol> symbols;
   symbols.reserve(normalized.size());
@@ -152,7 +154,7 @@ std::vector<std::pair<absl::string_view, int>> Model::SampleEncode(
       SymbolPair &h = agenda_vec.emplace_back();
       h.left = left;
       h.right = right;
-      h.score = GetScore(it->second);
+      h.score = GetScoreInlined(it->second);
       h.size = piece.size();
 
       // Makes `rev_merge` for resegmentation.
@@ -183,7 +185,7 @@ std::vector<std::pair<absl::string_view, int>> Model::SampleEncode(
     SymbolPair h;
     h.left = left;
     h.right = right;
-    h.score = GetScore(id);
+    h.score = GetScoreInlined(id);
     h.size = piece.size();
     agenda.push(h);
 
@@ -240,9 +242,8 @@ std::vector<std::pair<absl::string_view, int>> Model::SampleEncode(
     MaybeAddNewSymbolPair(top.left, left_symbol.next);
   }
 
-  std::function<void(absl::string_view, EncodeResult *)> resegment;
-  resegment = [this, &resegment, &rev_merge](absl::string_view w,
-                                             EncodeResult *output) -> void {
+  auto resegment = [this, &rev_merge](auto &self, absl::string_view w,
+                                      EncodeResult *output) -> void {
     const int id = PieceToId(w);
     if (id == -1 || !IsUnusedInlined(id)) {
       output->emplace_back(w, id);
@@ -250,21 +251,19 @@ std::vector<std::pair<absl::string_view, int>> Model::SampleEncode(
     }
     const auto p = rev_merge.find(w);
     if (p == rev_merge.end()) {
-      // This block will never be called, as `rev_merge` stores all the
-      // resegmentation info for unused id.
       output->emplace_back(w, id);
       return;
     }
-    // Recursively resegment left and right symbols.
-    resegment(p->second.first, output);
-    resegment(p->second.second, output);
+    // Direct recursive calls
+    self(self, p->second.first, output);
+    self(self, p->second.second, output);
   };
 
   EncodeResult output;
   output.reserve(symbols.size());
   for (int index = 0; index != -1; index = symbols[index].next) {
     if (index >= 0 && index < static_cast<int>(symbols.size())) {
-      resegment(symbols[index].piece, &output);
+      resegment(resegment, symbols[index].piece, &output);
     }
   }
 

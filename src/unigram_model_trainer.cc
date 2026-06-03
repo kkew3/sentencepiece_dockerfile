@@ -362,7 +362,6 @@ std::vector<float> Trainer::RunEStep(const TrainerModel &model, float *obj,
   std::vector<int64_t> ntokens(trainer_spec_.num_threads(), 0.0);
 
   auto pool = std::make_unique<ThreadPool>(trainer_spec_.num_threads());
-  pool->StartWorkers();
 
   int64_t all_sentence_freq = 0;
   for (const auto &w : sentences_) {
@@ -478,7 +477,6 @@ TrainerModel::SentencePieces Trainer::PruneSentencePieces(
     std::vector<std::vector<float>> freqs(trainer_spec_.num_threads());
 
     auto pool = std::make_unique<ThreadPool>(trainer_spec_.num_threads());
-    pool->StartWorkers();
     for (int n = 0; n < trainer_spec_.num_threads(); ++n) {
       freqs[n].resize(sentencepieces.size(), 0.0);
 

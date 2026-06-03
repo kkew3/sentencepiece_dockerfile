@@ -149,6 +149,7 @@ set(SPM_TEST_SRCS
   model_interface_test.cc
   normalizer_test.cc
   sentencepiece_processor_test.cc
+  sentencepiece_processor_parallel_test.cc
   sentencepiece_trainer_test.cc
   test_main.cc
   testharness.cc
@@ -319,6 +320,13 @@ if (SPM_BUILD_TEST)
 
   add_test(NAME sentencepiece_test
     COMMAND $<TARGET_FILE:spm_test> --test_srcdir=${data_dir})
+endif()
+
+if (SPM_ENABLE_BENCHMARK)
+  add_executable(sentencepiece_processor_benchmarks_test
+        sentencepiece_processor_benchmarks_test.cc testharness.cc)
+  target_link_libraries(sentencepiece_processor_benchmarks_test
+        sentencepiece sentencepiece_train benchmark::benchmark)
 endif()
 
 if (CMAKE_SYSTEM_NAME STREQUAL "iOS")

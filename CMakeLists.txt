@@ -30,6 +30,7 @@ option(SPM_TCMALLOC_STATIC "Link static library of TCMALLOC." OFF)
 option(SPM_ENABLE_MSVC_MT_BUILD, "Use /MT flag in MSVC build" OFF)
 option(SPM_CROSS_SYSTEM_PROCESSOR, "Override system processor" "")
 option(SPM_DISABLE_EMBEDDED_DATA, "Disable to embed pre-compiled data." OFF)
+option(SPM_ENABLE_BENCHMARK "Build benchmark programs" OFF)
 option(SPM_NLCODEC_BPE
        "Build the NLCodec fast BPE trainer from contrib/nlcodec (adds --nlcodec_bpe flag)."
        OFF)
@@ -208,6 +209,24 @@ elseif (SPM_ABSL_PROVIDER STREQUAL "package")
          SYMBOLIC)
   endif()
   include_directories(${ABSL_INCLUDE_DIRS})
+endif()
+
+if(SPM_ENABLE_BENCHMARK)
+  include(FetchContent)
+  FetchContent_Populate(
+      google_benchmark
+      GIT_REPOSITORY https://github.com/google/benchmark.git
+      SOURCE_DIR ${CMAKE_CURRENT_SOURCE_DIR}/third_party/benchmark
+      GIT_PROGRESS TRUE
+      GIT_TAG v1.9.5
+   )
+
+  set(BENCHMARK_ENABLE_GTEST_TESTS OFF CACHE BOOL "Disable benchmark gtest" FORCE)
+  set(BENCHMARK_ENABLE_TESTING OFF CACHE BOOL "Disable benchmark testing" FORCE)
+
+  add_subdirectory(third_party/benchmark)
+  
+  include_directories(${CMAKE_CURRENT_SOURCE_DIR}/third_party/benchmark/include)
 endif()
 
 add_subdirectory(src)

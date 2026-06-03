@@ -430,6 +430,7 @@ util::Status Builder::MergeUnicodeCaseFoldMap(Builder::CharsMap *chars_map) {
 #ifdef ENABLE_NFKC_COMPILE
   for (auto &c : *chars_map) {
     std::vector<char32> trg;
+    trg.reserve(c.second.size());
     for (char32 c : c.second) trg.push_back(u_foldCase(c, U_FOLD_CASE_DEFAULT));
     c.second = trg;
   }

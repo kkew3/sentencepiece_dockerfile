@@ -38,7 +38,7 @@ std::vector<absl::string_view> SplitIntoWords(
     bool allow_ws_only_pieces = false);
 
 // Converts byte (0-255) to piece (e.g., 58 -> "<0x3A>").
-std::string ByteToPiece(unsigned char c);
+const std::string &ByteToPiece(unsigned char c);
 
 // Converts piece to byte (e.g., "<0x3A>" -> 58). Returns -1 if `piece` is not
 // a valid byte piece.

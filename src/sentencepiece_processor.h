@@ -17,6 +17,7 @@
 
 #include <cstdint>
 #include <cstring>
+#include <functional>
 #include <memory>
 #include <string>
 #include <string_view>
@@ -75,6 +76,7 @@ class Status {
   struct Rep;
   std::unique_ptr<Rep> rep_;
 };
+
 }  // namespace util
 
 // SentencePieceProcessor:
@@ -136,6 +138,21 @@ class ModelInterface;
 class SentencePieceText;
 class ModelProto;
 class NormalizerSpec;
+class ThreadPool;
+
+class ThreadPool {
+ public:
+  ThreadPool() = delete;
+  ThreadPool(size_t num_threads);
+  ~ThreadPool();
+
+  void Schedule(std::function<void()> func);
+  size_t num_threads() const;
+
+ private:
+  class Impl;
+  std::unique_ptr<Impl> impl_;
+};
 
 namespace normalizer {
 class Normalizer;
@@ -421,6 +438,26 @@ class SentencePieceProcessor {
 
   virtual util::Status Decode(const std::vector<int> &ids,
                               SentencePieceText *spt) const;
+
+  //////////////////////////////////////////////////////////////
+  // API methods for encoding sequences in parallel.
+  // This is particularly useful for long inputs.
+
+  // chunk_len controls how long each chunk to be tokenized in parallel is.
+  // For best results, set this to ~10000.
+
+  // WARNING: ParallelEncode with SentencePieceText * inputs currently does not
+  // copy the UNK surface form correctly. Use at your own risk!
+  virtual util::Status ParallelEncode(absl::string_view input, int chunk_len,
+                                      ThreadPool &thread_pool,
+                                      std::vector<std::string> *pieces) const;
+  virtual util::Status ParallelEncode(absl::string_view input, int chunk_len,
+                                      ThreadPool &thread_pool,
+                                      std::vector<int> *ids) const;
+  virtual util::Status ParallelEncode(absl::string_view input, int chunk_len,
+                                      ThreadPool &thread_pool,
+                                      SentencePieceText *spt) const;
+
 #ifdef SWIG
 #define SPP_SWIG_CHECK_AND_THROW \
   if (!status.ok()) throw status;
@@ -500,6 +537,19 @@ class SentencePieceProcessor {
     using _T = std::vector<std::pair<std::vector<int>, float>>;
     DEFINE_SPP_DIRECT_FUNC_IMPL(SampleEncodeAndScore, _T, input, num_samples,
                                 alpha, wor, include_best);
+  }
+
+  virtual std::vector<std::string> ParallelEncodeAsPieces(
+      absl::string_view input, int chunk_len, ThreadPool &therad_pool) const {
+    DEFINE_SPP_DIRECT_FUNC_IMPL(ParallelEncode, std::vector<std::string>, input,
+                                chunk_len, therad_pool);
+  }
+
+  virtual std::vector<int> ParallelEncodeAsIds(absl::string_view input,
+                                               int chunk_len,
+                                               ThreadPool &therad_pool) const {
+    DEFINE_SPP_DIRECT_FUNC_IMPL(ParallelEncode, std::vector<int>, input,
+                                chunk_len, therad_pool);
   }
 
   // DEPRECATED: Remove this API and use std::vector<std::string_view>
@@ -717,6 +767,12 @@ class SentencePieceProcessor {
       const std::vector<size_t> &norm_to_orig,
       const std::vector<std::pair<absl::string_view, int>> &result,
       SentencePieceText *spt, bool skip_surface = false) const;
+
+  util::Status ParallelEncodeInternal(absl::string_view input, size_t chunk_len,
+                                      ThreadPool &thread_pool,
+                                      std::vector<std::string> *pieces,
+                                      std::vector<int> *ids,
+                                      SentencePieceText *spt) const;
 
   std::unique_ptr<ModelInterface> model_;
   std::unique_ptr<normalizer::Normalizer> normalizer_;

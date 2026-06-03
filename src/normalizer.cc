@@ -116,9 +116,7 @@ util::Status Normalizer::Normalize(absl::string_view input,
   auto add_ws = [&consumed, &normalized, &norm_to_orig, &kSpaceSymbol]() {
     normalized->append(kSpaceSymbol.data(), kSpaceSymbol.size());
     if (norm_to_orig) {
-      for (size_t n = 0; n < kSpaceSymbol.size(); ++n) {
-        norm_to_orig->push_back(consumed);
-      }
+      norm_to_orig->insert(norm_to_orig->end(), kSpaceSymbol.size(), consumed);
     }
   };
 
@@ -283,7 +281,7 @@ util::Status Normalizer::DecodePrecompiledCharsMap(
     trie_blob_size = util::Swap32(trie_blob_size);
   }
 
-  if (trie_blob_size >= blob.size()) {
+  if (trie_blob_size >= blob.size() - sizeof(trie_blob_size)) {
     return util::InternalError("Trie data size exceeds the input blob size.");
   }
 

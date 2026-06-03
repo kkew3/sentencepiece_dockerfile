@@ -47,18 +47,19 @@ class MockModel : public ModelInterface {
     nbest_output_ = output;
   }
 
-  EncodeResult Encode(absl::string_view normalized) const {
+  EncodeResult Encode(absl::string_view normalized) const override {
     EXPECT_EQ(normalized, input_);
     return output_;
   }
 
-  EncodeResult SampleEncode(absl::string_view normalized, float alpha) const {
+  EncodeResult SampleEncode(absl::string_view normalized,
+                            float alpha) const override {
     EXPECT_EQ(normalized, input_);
     return output_;
   }
 
   NBestEncodeResult NBestEncode(absl::string_view normalized,
-                                int nbest_size) const {
+                                int nbest_size) const override {
     EXPECT_EQ(normalized, input_);
     return nbest_output_;
   }
@@ -67,17 +68,17 @@ class MockModel : public ModelInterface {
 
   bool IsNBestEncodeAvailable() const override { return true; }
 
-  bool IsControl(int id) const { return id == 1 || id == 2; }
+  bool IsControl(int id) const override { return id == 1 || id == 2; }
 
-  bool IsUnknown(int id) const { return id == 0; }
+  bool IsUnknown(int id) const override { return id == 0; }
 
-  int GetPieceSize() const { return 10; }
+  int GetPieceSize() const override { return 10; }
 
-  int PieceToId(absl::string_view piece) const { return 0; }
+  int PieceToId(absl::string_view piece) const override { return 0; }
 
-  const std::string &IdToPiece(int id) const { return kEmptyString; }
+  const std::string &IdToPiece(int id) const override { return kEmptyString; }
 
-  float GetScore(int id) const { return 0.0; }
+  float GetScore(int id) const override { return 0.0; }
 
  private:
   absl::string_view input_;

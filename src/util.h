@@ -21,6 +21,7 @@
 #include <algorithm>
 #include <functional>
 #include <memory>
+#include <queue>
 #include <random>
 #include <sstream>
 #include <string>
@@ -31,6 +32,8 @@
 #include "common.h"
 #include "config.h"
 #include "sentencepiece_processor.h"
+#include "third_party/absl/base/thread_annotations.h"
+#include "third_party/absl/functional/any_invocable.h"
 #include "third_party/absl/numeric/bits.h"
 #include "third_party/absl/random/random.h"
 #include "third_party/absl/strings/ascii.h"
@@ -40,6 +43,7 @@
 #include "third_party/absl/strings/str_join.h"
 #include "third_party/absl/strings/string_view.h"
 #include "third_party/absl/strings/strip.h"
+#include "third_party/absl/synchronization/mutex.h"
 
 static constexpr uint32_t kUnicodeError = 0xFFFD;
 
@@ -133,6 +137,17 @@ std::string UnicodeCharToUTF8(const char32 c);
 UnicodeText UTF8ToUnicodeText(absl::string_view utf8);
 
 std::string UnicodeTextToUTF8(const UnicodeText &utext);
+
+struct UnicodeTextAndOffsets {
+  UnicodeText unicode_text;
+  std::vector<uint32_t> offsets;
+};
+
+// - unicode_text is the UTF-8 string converted to UnicodeText.
+// - offsets.size() == unicode_text.size() + 1
+// - offsets[0] is always 0.
+// - offsets[i] is the offset of unicode_text[i] in the original UTF-8 string.
+UnicodeTextAndOffsets UTF8ToUnicodeTextAndOffsets(absl::string_view utf8);
 
 }  // namespace string_util
 
@@ -345,22 +360,6 @@ void STLDeleteElements(std::vector<T *> *vec) {
   vec->clear();
 }
 }  // namespace port
-
-class ThreadPool {
- public:
-  ThreadPool(int32_t n) {}
-  virtual ~ThreadPool() {
-    for (auto &task : tasks_) {
-      task.join();
-    }
-  }
-
-  void Schedule(std::function<void()> closure) { tasks_.emplace_back(closure); }
-  void StartWorkers() {}
-
- private:
-  std::vector<std::thread> tasks_;
-};
 
 namespace log_domain {
 
