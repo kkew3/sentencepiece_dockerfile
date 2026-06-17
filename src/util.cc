@@ -19,12 +19,17 @@
 #include <memory>
 
 #include "third_party/absl/random/random.h"
+#include "third_party/absl/status/status.h"
+#include "third_party/absl/strings/string_view.h"
+#include "third_party/absl/synchronization/blocking_counter.h"
+#include "third_party/absl/synchronization/mutex.h"
 
 namespace sentencepiece {
 
 namespace {
 static constexpr uint32_t kDefaultSeed = static_cast<uint32_t>(-1);
 static std::atomic<uint32_t> g_seed = kDefaultSeed;
+static std::atomic<int> g_nbest_timeout_ms = 30000;
 }  // namespace
 
 void SetRandomGeneratorSeed(uint32_t seed) { g_seed.store(seed); }
@@ -32,7 +37,7 @@ void SetRandomGeneratorSeed(uint32_t seed) { g_seed.store(seed); }
 uint32_t GetRandomGeneratorSeed() { return g_seed.load(); }
 
 namespace {
-std::shared_ptr<const std::string> *GetSharedDataDir() {
+std::shared_ptr<const std::string>* GetSharedDataDir() {
   static auto g_data_dir = std::make_shared<const std::string>(INSTALL_DATADIR);
   return &g_data_dir;
 }
@@ -53,23 +58,27 @@ void SetMinLogLevel(int v) {
   absl::SetMinLogLevel(static_cast<absl::LogSeverityAtLeast>(v));
 }
 
+void SetNBestTimeout(int timeout_ms) { g_nbest_timeout_ms.store(timeout_ms); }
+
+int GetNBestTimeout() { return g_nbest_timeout_ms.load(); }
+
 namespace string_util {
 
 // mblen sotres the number of bytes consumed after decoding.
-char32 DecodeUTF8(const char *begin, const char *end, size_t *mblen) {
+char32_t DecodeUTF8(const char* begin, const char* end, size_t* mblen) {
   const size_t len = end - begin;
 
   if (static_cast<unsigned char>(begin[0]) < 0x80) {
     *mblen = 1;
     return static_cast<unsigned char>(begin[0]);
   } else if (len >= 2 && (begin[0] & 0xE0) == 0xC0) {
-    const char32 cp = (((begin[0] & 0x1F) << 6) | ((begin[1] & 0x3F)));
+    const char32_t cp = (((begin[0] & 0x1F) << 6) | ((begin[1] & 0x3F)));
     if (IsTrailByte(begin[1]) && cp >= 0x0080 && IsValidCodepoint(cp)) {
       *mblen = 2;
       return cp;
     }
   } else if (len >= 3 && (begin[0] & 0xF0) == 0xE0) {
-    const char32 cp = (((begin[0] & 0x0F) << 12) | ((begin[1] & 0x3F) << 6) |
+    const char32_t cp = (((begin[0] & 0x0F) << 12) | ((begin[1] & 0x3F) << 6) |
                        ((begin[2] & 0x3F)));
     if (IsTrailByte(begin[1]) && IsTrailByte(begin[2]) && cp >= 0x0800 &&
         IsValidCodepoint(cp)) {
@@ -77,7 +86,7 @@ char32 DecodeUTF8(const char *begin, const char *end, size_t *mblen) {
       return cp;
     }
   } else if (len >= 4 && (begin[0] & 0xf8) == 0xF0) {
-    const char32 cp = (((begin[0] & 0x07) << 18) | ((begin[1] & 0x3F) << 12) |
+    const char32_t cp = (((begin[0] & 0x07) << 18) | ((begin[1] & 0x3F) << 12) |
                        ((begin[2] & 0x3F) << 6) | ((begin[3] & 0x3F)));
     if (IsTrailByte(begin[1]) && IsTrailByte(begin[2]) &&
         IsTrailByte(begin[3]) && cp >= 0x10000 && IsValidCodepoint(cp)) {
@@ -92,11 +101,11 @@ char32 DecodeUTF8(const char *begin, const char *end, size_t *mblen) {
 }
 
 bool IsStructurallyValid(absl::string_view str) {
-  const char *begin = str.data();
-  const char *end = str.data() + str.size();
+  const char* begin = str.data();
+  const char* end = str.data() + str.size();
   size_t mblen = 0;
   while (begin < end) {
-    const char32 c = DecodeUTF8(begin, end, &mblen);
+    const char32_t c = DecodeUTF8(begin, end, &mblen);
     if (c == kUnicodeError && mblen != 3) return false;
     if (!IsValidCodepoint(c)) return false;
     begin += mblen;
@@ -104,7 +113,7 @@ bool IsStructurallyValid(absl::string_view str) {
   return true;
 }
 
-size_t EncodeUTF8(char32 c, char *output) {
+size_t EncodeUTF8(char32_t c, char* output) {
   if (c <= 0x7F) {
     *output = static_cast<char>(c);
     return 1;
@@ -141,25 +150,27 @@ size_t EncodeUTF8(char32 c, char *output) {
   return 4;
 }
 
-std::string UnicodeCharToUTF8(const char32 c) { return UnicodeTextToUTF8({c}); }
+std::string UnicodeCharToUTF8(const char32_t c) {
+  return UnicodeTextToUTF8({c});
+}
 
 UnicodeText UTF8ToUnicodeText(absl::string_view utf8) {
   UnicodeText uc;
-  const char *begin = utf8.data();
-  const char *end = utf8.data() + utf8.size();
+  const char* begin = utf8.data();
+  const char* end = utf8.data() + utf8.size();
   while (begin < end) {
     size_t mblen;
-    const char32 c = DecodeUTF8(begin, end, &mblen);
+    const char32_t c = DecodeUTF8(begin, end, &mblen);
     uc.push_back(c);
     begin += mblen;
   }
   return uc;
 }
 
-std::string UnicodeTextToUTF8(const UnicodeText &utext) {
+std::string UnicodeTextToUTF8(const UnicodeText& utext) {
   char buf[8];
   std::string result;
-  for (const char32 c : utext) {
+  for (const char32_t c : utext) {
     const size_t mblen = EncodeUTF8(c, buf);
     result.append(buf, mblen);
   }
@@ -172,11 +183,11 @@ UnicodeTextAndOffsets UTF8ToUnicodeTextAndOffsets(absl::string_view utf8) {
   ret.unicode_text.reserve(utf8.size());
   ret.offsets.reserve(utf8.size() + 1);
   ret.offsets.push_back(0);
-  const char *begin = utf8.data();
-  const char *end = utf8.data() + utf8.size();
+  const char* begin = utf8.data();
+  const char* end = utf8.data() + utf8.size();
   while (begin < end) {
     size_t mblen;
-    const char32 c = DecodeUTF8(begin, end, &mblen);
+    const char32_t c = DecodeUTF8(begin, end, &mblen);
     running_offset += mblen;
     ret.unicode_text.push_back(c);
     ret.offsets.push_back(running_offset);
@@ -188,7 +199,7 @@ UnicodeTextAndOffsets UTF8ToUnicodeTextAndOffsets(absl::string_view utf8) {
 }  // namespace string_util
 
 namespace random {
-absl::BitGen *GetRandomGenerator() {
+absl::BitGen* GetRandomGenerator() {
   // Thread-locals occupy stack space in every thread ever created by the
   // program, even if that thread never uses the thread-local variable.
   thread_local static auto mt =
@@ -205,7 +216,7 @@ namespace util {
 std::string StrError(int errnum) {
   constexpr int kStrErrorSize = 1024;
   char buffer[kStrErrorSize];
-  char *str = nullptr;
+  char* str = nullptr;
 #if defined(__GLIBC__) && defined(_GNU_SOURCE)
   str = strerror_r(errnum, buffer, kStrErrorSize - 1);
 #elif defined(_WIN32)
@@ -220,10 +231,10 @@ std::string StrError(int errnum) {
 
 std::vector<std::string> StrSplitAsCSV(absl::string_view text) {
   std::string buf = std::string(text);
-  char *str = const_cast<char *>(buf.data());
-  char *eos = str + text.size();
-  char *start = nullptr;
-  char *end = nullptr;
+  char* str = const_cast<char*>(buf.data());
+  char* eos = str + text.size();
+  char* start = nullptr;
+  char* end = nullptr;
 
   std::vector<std::string> result;
   for (; str < eos; ++str) {
@@ -269,7 +280,7 @@ std::wstring Utf8ToWide(absl::string_view input) {
 class ThreadPool::Impl {
  public:
   explicit Impl(int num_threads) {
-    num_threads = std::min<int>(std::max<int>(1, num_threads), 1024);
+    num_threads = std::min<int>(std::max<int>(1, num_threads), 65536);
     threads_.reserve(num_threads);
     for (int i = 0; i < num_threads; ++i) {
       threads_.push_back(std::thread(&Impl::WorkLoop, this));
@@ -283,7 +294,7 @@ class ThreadPool::Impl {
         queue_.push(nullptr);  // Shutdown signal.
       }
     }
-    for (auto &thread : threads_) thread.join();
+    for (auto& thread : threads_) thread.join();
   }
 
   void Schedule(absl::AnyInvocable<void()> func) {
@@ -330,8 +341,53 @@ void ThreadPool::Schedule(std::function<void()> func) {
 
 size_t ThreadPool::num_threads() const { return impl_->num_threads(); }
 
+absl::Status RunBatch(size_t total_tasks,
+                      std::function<absl::Status(size_t)> task_func,
+                      ThreadPool& pool) {
+  if (total_tasks == 0) return absl::OkStatus();
+
+  // Cap workers to thread pool capacity.
+  const size_t num_workers = std::min<size_t>(pool.num_threads(), total_tasks);
+
+  std::atomic<size_t> index{0};      // For dynamic load-balancing
+  std::atomic<bool> aborted{false};  // For early-abort
+
+  absl::BlockingCounter barrier(num_workers);
+  absl::Mutex status_mutex;
+  absl::Status batch_status = absl::OkStatus();
+
+  for (size_t n = 0; n < num_workers; ++n) {
+    pool.Schedule([&]() {
+      size_t i = 0;
+
+      // Fetch next task index dynamically. Relaxed ordering is sufficient.
+      while (!aborted.load(std::memory_order_relaxed) &&
+             (i = index.fetch_add(1, std::memory_order_relaxed)) <
+                 total_tasks) {
+        absl::Status status = task_func(i);
+
+        if (!status.ok()) {
+          // Signal other workers to stop.
+          aborted.store(true, std::memory_order_relaxed);
+
+          // Keep the first error encountered.
+          absl::MutexLock lock(&status_mutex);
+          batch_status = std::move(status);
+        }
+      }
+
+      barrier.DecrementCount();
+    });
+  }
+
+  // Wait for all workers to finish.
+  barrier.Wait();
+
+  return batch_status;
+}
+
 namespace log_domain {
-double LogSum(const std::vector<double> &xs) {
+double LogSum(const std::vector<double>& xs) {
   if (xs.empty()) {
     return -1.0 * std::numeric_limits<double>::max();
   }

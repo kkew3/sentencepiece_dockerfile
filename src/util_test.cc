@@ -18,7 +18,11 @@
 
 #include "filesystem.h"
 #include "testharness.h"
+#include "third_party/absl/status/status.h"
 #include "third_party/absl/strings/str_cat.h"
+#include "third_party/absl/strings/string_view.h"
+#include "third_party/absl/time/clock.h"
+#include "third_party/absl/time/time.h"
 
 namespace sentencepiece {
 namespace {
@@ -26,9 +30,9 @@ constexpr int kMaxUnicode = 0x10FFFF;
 }
 
 TEST(UtilTest, Hex) {
-  for (char32 a = 0; a < 100000; ++a) {
-    const std::string s = string_util::IntToHex<char32>(a);
-    CHECK_EQ(a, string_util::HexToInt<char32>(s));
+  for (char32_t a = 0; a < 100000; ++a) {
+    const std::string s = string_util::IntToHex<char32_t>(a);
+    CHECK_EQ(a, string_util::HexToInt<char32_t>(s));
   }
   const int n = 151414;
   CHECK_EQ("24F76", string_util::IntToHex(n));
@@ -158,7 +162,7 @@ TEST(UtilTest, DecodeUTF8Test) {
   }
 
   {
-    const char *kInvalidData[] = {
+    const char* kInvalidData[] = {
         "\xC2",      // must be 2byte.
         "\xE0\xE0",  // must be 3byte.
         "\xFF",      // BOM
@@ -196,11 +200,11 @@ TEST(UtilTest, DecodeUTF8Test) {
 
 TEST(UtilTest, EncodeUTF8Test) {
   char buf[16];
-  for (char32 cp = 1; cp <= kMaxUnicode; ++cp) {
+  for (char32_t cp = 1; cp <= kMaxUnicode; ++cp) {
     if (!string_util::IsValidCodepoint(cp)) continue;
     const size_t mblen = string_util::EncodeUTF8(cp, buf);
     size_t mblen2;
-    const char32 c = string_util::DecodeUTF8(buf, buf + 16, &mblen2);
+    const char32_t c = string_util::DecodeUTF8(buf, buf + 16, &mblen2);
     EXPECT_EQ(mblen2, mblen);
     EXPECT_EQ(cp, c);
   }
@@ -220,7 +224,7 @@ TEST(UtilTest, EncodeUTF8Test) {
 }
 
 TEST(UtilTest, UnicodeCharToUTF8Test) {
-  for (char32 cp = 1; cp <= kMaxUnicode; ++cp) {
+  for (char32_t cp = 1; cp <= kMaxUnicode; ++cp) {
     if (!string_util::IsValidCodepoint(cp)) continue;
     const auto s = string_util::UnicodeCharToUTF8(cp);
     const auto ut = string_util::UTF8ToUnicodeText(s);
@@ -318,48 +322,28 @@ TEST(UtilTest, InputOutputBufferInvalidFileTest) {
   EXPECT_FALSE(input->status().ok());
 }
 
-TEST(UtilTest, STLDeleteELementsTest) {
-  class Item {
-   public:
-    explicit Item(int *counter) : counter_(counter) {}
-    ~Item() { ++*counter_; }
-
-   private:
-    int *counter_;
-  };
-
-  std::vector<Item *> data;
-  int counter = 0;
-  for (int i = 0; i < 10; ++i) {
-    data.push_back(new Item(&counter));
-  }
-  port::STLDeleteElements(&data);
-  CHECK_EQ(10, counter);
-  EXPECT_EQ(0, data.size());
-}
-
 TEST(UtilTest, StatusTest) {
-  const util::Status ok;
+  const absl::Status ok;
   EXPECT_TRUE(ok.ok());
-  EXPECT_EQ(util::StatusCode::kOk, ok.code());
+  EXPECT_EQ(absl::StatusCode::kOk, ok.code());
   EXPECT_EQ(std::string(""), ok.message());
 
-  const util::Status s1(util::StatusCode::kUnknown, "unknown");
-  const util::Status s2(util::StatusCode::kUnknown, std::string("unknown"));
+  const absl::Status s1(absl::StatusCode::kUnknown, "unknown");
+  const absl::Status s2(absl::StatusCode::kUnknown, std::string("unknown"));
 
-  EXPECT_EQ(util::StatusCode::kUnknown, s1.code());
-  EXPECT_EQ(util::StatusCode::kUnknown, s2.code());
+  EXPECT_EQ(absl::StatusCode::kUnknown, s1.code());
+  EXPECT_EQ(absl::StatusCode::kUnknown, s2.code());
   EXPECT_EQ(std::string("unknown"), s1.message());
   EXPECT_EQ(std::string("unknown"), s2.message());
 
-  auto ok2 = util::OkStatus();
+  auto ok2 = absl::OkStatus();
   EXPECT_TRUE(ok2.ok());
-  EXPECT_EQ(util::StatusCode::kOk, ok2.code());
+  EXPECT_EQ(absl::StatusCode::kOk, ok2.code());
   EXPECT_EQ(std::string(""), ok2.message());
 
-  util::OkStatus().IgnoreError();
+  absl::OkStatus().IgnoreError();
   for (int i = 1; i <= 16; ++i) {
-    util::Status s(static_cast<util::StatusCode>(i), "message");
+    absl::Status s(static_cast<absl::StatusCode>(i), "message");
     EXPECT_TRUE(s.ToString().find("message") != std::string::npos)
         << s.ToString();
   }
@@ -421,6 +405,52 @@ TEST(SentencePieceTrainerTest, DataDirTest) {
 
   SetDataDir(INSTALL_DATADIR);
   EXPECT_EQ(GetDataDir(), INSTALL_DATADIR);
+}
+
+TEST(BatchRunnerTest, EmptyTasks) {
+  ThreadPool pool(4);
+  auto status = RunBatch(0, [](size_t) { return absl::OkStatus(); }, pool);
+  EXPECT_TRUE(status.ok());
+}
+
+TEST(BatchRunnerTest, AllSuccess) {
+  ThreadPool pool(4);
+  const size_t total_tasks = 100;
+  std::vector<int> results(total_tasks, 0);
+
+  auto status = RunBatch(
+      total_tasks,
+      [&](size_t i) {
+        results[i] = i * 2;
+        return absl::OkStatus();
+      },
+      pool);
+
+  EXPECT_TRUE(status.ok());
+  for (size_t i = 0; i < total_tasks; ++i) {
+    EXPECT_EQ(results[i], i * 2);
+  }
+}
+
+TEST(BatchRunnerTest, EarlyAbortOnError) {
+  ThreadPool pool(4);
+  const size_t total_tasks = 100;
+  std::atomic<int> execution_count{0};
+
+  auto status = RunBatch(
+      total_tasks,
+      [&](size_t i) {
+        execution_count++;
+        if (i == 3) {
+          return absl::InternalError("Intentional failure at index 50");
+        }
+        absl::SleepFor(absl::Milliseconds(1));
+        return absl::OkStatus();
+      },
+      pool);
+
+  EXPECT_FALSE(status.ok());
+  EXPECT_LT(execution_count.load(), total_tasks);
 }
 
 }  // namespace sentencepiece

@@ -32,10 +32,13 @@
 #include "common.h"
 #include "config.h"
 #include "sentencepiece_processor.h"
+#include "third_party/absl/base/internal/endian.h"
 #include "third_party/absl/base/thread_annotations.h"
 #include "third_party/absl/functional/any_invocable.h"
 #include "third_party/absl/numeric/bits.h"
 #include "third_party/absl/random/random.h"
+#include "third_party/absl/status/status.h"
+#include "third_party/absl/status/status_builder.h"
 #include "third_party/absl/strings/ascii.h"
 #include "third_party/absl/strings/numbers.h"
 #include "third_party/absl/strings/str_cat.h"
@@ -50,12 +53,13 @@ static constexpr uint32_t kUnicodeError = 0xFFFD;
 namespace sentencepiece {
 
 template <typename T>
-std::ostream &operator<<(std::ostream &out, const std::vector<T> &v) {
+std::ostream& operator<<(std::ostream& out, const std::vector<T>& v) {
   out << absl::StrJoin(v, " ");
   return out;
 }
 
 uint32_t GetRandomGeneratorSeed();
+int GetNBestTimeout();
 
 // Sets data dir containing the global resources, e.g., pre-compiled
 // normalization data.
@@ -67,8 +71,8 @@ std::string GetDataDir();
 namespace string_util {
 
 template <typename T>
-inline bool DecodePOD(absl::string_view str, T *result) {
-  static_assert(std::is_trivially_copyable<T>::value,
+inline bool DecodePOD(absl::string_view str, T* result) {
+  static_assert(std::is_trivially_copyable_v<T>,
                 "T must be trivially copyable");
   if (sizeof(*result) != str.size()) {
     return false;
@@ -78,10 +82,10 @@ inline bool DecodePOD(absl::string_view str, T *result) {
 }
 
 template <typename T>
-inline std::string EncodePOD(const T &value) {
-  static_assert(std::is_trivially_copyable<T>::value,
+inline std::string EncodePOD(const T& value) {
+  static_assert(std::is_trivially_copyable_v<T>,
                 "T must be trivially copyable");
-  return std::string(reinterpret_cast<const char *>(&value), sizeof(T));
+  return {reinterpret_cast<const char*>(&value), sizeof(T)};
 }
 
 template <typename T>
@@ -93,7 +97,9 @@ template <typename T>
 inline T HexToInt(absl::string_view value) {
   absl::ConsumePrefix(&value, "0x");
   T n = 0;
-  if (!absl::numbers_internal::safe_strtoi_base(value, &n, 16)) return 0;
+  if (!absl::numbers_internal::safe_strtoi_base(value, &n, 16)) {
+    return 0;
+  }
   return n;
 }
 
@@ -103,7 +109,7 @@ inline std::string SimpleItoa(T val) {
 }
 
 // Return length of a single UTF-8 source character
-inline size_t OneCharLen(const char *src) {
+inline size_t OneCharLen(const char* src) {
   return "\1\1\1\1\1\1\1\1\1\1\1\1\2\2\3\4"[(*src & 0xFF) >> 4];
 }
 
@@ -111,32 +117,32 @@ inline size_t OneCharLen(const char *src) {
 // Since trail bytes are always in [0x80, 0xBF], we can optimize:
 inline bool IsTrailByte(char x) { return static_cast<signed char>(x) < -0x40; }
 
-inline bool IsValidCodepoint(char32 c) {
+inline bool IsValidCodepoint(char32_t c) {
   return (static_cast<uint32_t>(c) < 0xD800) || (c >= 0xE000 && c <= 0x10FFFF);
 }
 
 bool IsStructurallyValid(absl::string_view str);
 
-using UnicodeText = std::vector<char32>;
+using UnicodeText = std::vector<char32_t>;
 
-char32 DecodeUTF8(const char *begin, const char *end, size_t *mblen);
+char32_t DecodeUTF8(const char* begin, const char* end, size_t* mblen);
 
-inline char32 DecodeUTF8(absl::string_view input, size_t *mblen) {
+inline char32_t DecodeUTF8(absl::string_view input, size_t* mblen) {
   return DecodeUTF8(input.data(), input.data() + input.size(), mblen);
 }
 
-inline bool IsValidDecodeUTF8(absl::string_view input, size_t *mblen) {
-  const char32 c = DecodeUTF8(input, mblen);
+inline bool IsValidDecodeUTF8(absl::string_view input, size_t* mblen) {
+  const char32_t c = DecodeUTF8(input, mblen);
   return c != kUnicodeError || *mblen == 3;
 }
 
-size_t EncodeUTF8(char32 c, char *output);
+size_t EncodeUTF8(char32_t c, char* output);
 
-std::string UnicodeCharToUTF8(const char32 c);
+std::string UnicodeCharToUTF8(char32_t c);
 
 UnicodeText UTF8ToUnicodeText(absl::string_view utf8);
 
-std::string UnicodeTextToUTF8(const UnicodeText &utext);
+std::string UnicodeTextToUTF8(const UnicodeText& utext);
 
 struct UnicodeTextAndOffsets {
   UnicodeText unicode_text;
@@ -155,14 +161,14 @@ UnicodeTextAndOffsets UTF8ToUnicodeTextAndOffsets(absl::string_view utf8);
 namespace port {
 
 template <class Collection, class Key>
-bool ContainsKey(const Collection &collection, const Key &key) {
+bool ContainsKey(const Collection& collection, const Key& key) {
   return collection.find(key) != collection.end();
 }
 
 template <class Collection>
-const typename Collection::value_type::second_type &FindOrDie(
-    const Collection &collection,
-    const typename Collection::value_type::first_type &key) {
+const typename Collection::value_type::second_type& FindOrDie(
+    const Collection& collection,
+    const typename Collection::value_type::first_type& key) {
   const auto it = collection.find(key);
   //  if (it == collection.end()) {
   //    LOG(FATAL) << "Map key not found: " << key;
@@ -171,10 +177,10 @@ const typename Collection::value_type::second_type &FindOrDie(
 }
 
 template <class Collection>
-const typename Collection::value_type::second_type &FindWithDefault(
-    const Collection &collection,
-    const typename Collection::value_type::first_type &key,
-    const typename Collection::value_type::second_type &value) {
+const typename Collection::value_type::second_type& FindWithDefault(
+    const Collection& collection,
+    const typename Collection::value_type::first_type& key,
+    const typename Collection::value_type::second_type& value) {
   if (const auto it = collection.find(key); it != collection.end()) {
     return it->second;
   }
@@ -182,24 +188,24 @@ const typename Collection::value_type::second_type &FindWithDefault(
 }
 
 template <class Collection>
-bool InsertIfNotPresent(Collection *const collection,
-                        const typename Collection::value_type &vt) {
+bool InsertIfNotPresent(Collection* const collection,
+                        const typename Collection::value_type& vt) {
   return collection->insert(vt).second;
 }
 
 template <class Collection>
 bool InsertIfNotPresent(
-    Collection *const collection,
-    const typename Collection::value_type::first_type &key,
-    const typename Collection::value_type::second_type &value) {
+    Collection* const collection,
+    const typename Collection::value_type::first_type& key,
+    const typename Collection::value_type::second_type& value) {
   return InsertIfNotPresent(collection,
                             typename Collection::value_type(key, value));
 }
 
 template <class Collection>
-void InsertOrDie(Collection *const collection,
-                 const typename Collection::value_type::first_type &key,
-                 const typename Collection::value_type::second_type &data) {
+void InsertOrDie(Collection* const collection,
+                 const typename Collection::value_type::first_type& key,
+                 const typename Collection::value_type::second_type& data) {
   CHECK(InsertIfNotPresent(collection, key, data)) << "duplicate key";
 }
 
@@ -207,34 +213,38 @@ void InsertOrDie(Collection *const collection,
 
 namespace random {
 
-absl::BitGen *GetRandomGenerator();
+absl::BitGen* GetRandomGenerator();
 
 template <typename T>
 class ReservoirSampler {
  public:
-  explicit ReservoirSampler(std::vector<T> *sampled, uint64_t size)
+  explicit ReservoirSampler(std::vector<T>* sampled, uint64_t size)
       : sampled_(sampled), size_(size) {}
-  explicit ReservoirSampler(std::vector<T> *sampled, uint64_t size,
+  explicit ReservoirSampler(std::vector<T>* sampled, uint64_t size,
                             uint64_t seed)
       : sampled_(sampled), size_(size), gen_(std::seed_seq{seed}) {}
-  virtual ~ReservoirSampler() {}
+  virtual ~ReservoirSampler() = default;
 
-  void Add(const T &item) {
-    if (size_ == 0) return;
+  void Add(const T& item) {
+    if (size_ == 0) {
+      return;
+    }
 
     ++total_;
     if (sampled_->size() < size_) {
       sampled_->push_back(item);
     } else {
       const auto n = absl::Uniform<uint64_t>(gen_, 0, total_ - 1);
-      if (n < sampled_->size()) (*sampled_)[n] = item;
+      if (n < sampled_->size()) {
+        (*sampled_)[n] = item;
+      }
     }
   }
 
-  uint64_t total_size() const { return total_; }
+  [[nodiscard]] uint64_t total_size() const { return total_; }
 
  private:
-  std::vector<T> *sampled_ = nullptr;
+  std::vector<T>* sampled_ = nullptr;
   uint64_t size_ = 0;
   uint64_t total_ = 0;
   absl::BitGen gen_;
@@ -245,27 +255,17 @@ class ReservoirSampler {
 namespace util {
 
 constexpr bool is_bigendian() {
-  if constexpr (absl::endian::native == absl::endian::big) {
-    return true;
-  } else {
-    return false;
-  }
+  return absl::endian::native == absl::endian::big;
 }
 
-inline uint32_t Swap32(uint32_t x) {
-#ifdef OS_WIN
-  return _byteswap_ulong(x);
-#else   // OS_WIN
-  return __builtin_bswap32(x);
-#endif  // OS_WIN
-}
+inline uint32_t Swap32(uint32_t x) { return absl::gbswap_32(x); }
 
 inline std::string JoinPath(absl::string_view path) {
-  return std::string(path.data(), path.size());
+  return {path.data(), path.size()};
 }
 
 template <typename... T>
-inline std::string JoinPath(absl::string_view first, const T &...rest) {
+inline std::string JoinPath(absl::string_view first, const T&... rest) {
 #ifdef OS_WIN
   return absl::StrCat(JoinPath(first), "\\", JoinPath(rest...));
 #else
@@ -281,58 +281,10 @@ std::vector<std::string> StrSplitAsCSV(absl::string_view text);
 std::wstring Utf8ToWide(const absl::string_view input);
 #endif
 
-inline Status OkStatus() { return Status(); }
-
-#define DECLARE_ERROR(FUNC)                                \
-  inline util::Status FUNC##Error(absl::string_view str) { \
-    return util::Status(StatusCode::k##FUNC, str.data());  \
-  }                                                        \
-  inline bool Is##FUNC(const util::Status &status) {       \
-    return status.code() == StatusCode::k##FUNC;           \
-  }
-
-DECLARE_ERROR(Cancelled)
-DECLARE_ERROR(InvalidArgument)
-DECLARE_ERROR(NotFound)
-DECLARE_ERROR(AlreadyExists)
-DECLARE_ERROR(ResourceExhausted)
-DECLARE_ERROR(Unavailable)
-DECLARE_ERROR(FailedPrecondition)
-DECLARE_ERROR(OutOfRange)
-DECLARE_ERROR(Unimplemented)
-DECLARE_ERROR(Internal)
-DECLARE_ERROR(Aborted)
-DECLARE_ERROR(DeadlineExceeded)
-DECLARE_ERROR(DataLoss)
-DECLARE_ERROR(Unknown)
-DECLARE_ERROR(PermissionDenied)
-DECLARE_ERROR(Unauthenticated)
-
-#define GTL_LOC (0)
-
-class StatusBuilder {
- public:
-  explicit StatusBuilder(StatusCode code) : code_(code) {}
-  explicit StatusBuilder(StatusCode code, int loc) : code_(code) {}
-
-  template <typename T>
-  StatusBuilder &operator<<(const T &value) {
-    os_ << value;
-    return *this;
-  }
-
-  operator Status() const { return Status(code_, os_.str()); }
-
- private:
-  const StatusCode code_;
-  std::ostringstream os_;
-};
-
-#define RET_CHECK(condition)                                 \
-  if (condition) {                                           \
-  } else /* NOLINT */                                        \
-    return ::sentencepiece::util::StatusBuilder(             \
-               ::sentencepiece::util::StatusCode::kInternal) \
+#define RET_CHECK(condition)                                  \
+  if (condition) {                                            \
+  } else /* NOLINT */                                         \
+    return absl::StatusBuilder(::absl::StatusCode::kInternal) \
            << __FILE__ << "(" << __LINE__ << ") [" << #condition << "] "
 
 #define RET_CHECK_EQ(a, b) RET_CHECK((a) == (b))
@@ -351,19 +303,9 @@ class StatusBuilder {
 
 }  // namespace util
 
-namespace port {
-template <typename T>
-void STLDeleteElements(std::vector<T *> *vec) {
-  for (auto item : *vec) {
-    delete item;
-  }
-  vec->clear();
-}
-}  // namespace port
-
 namespace log_domain {
 
-double LogSum(const std::vector<double> &xs);
+double LogSum(const std::vector<double>& xs);
 
 }  // namespace log_domain
 }  // namespace sentencepiece

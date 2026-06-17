@@ -20,6 +20,7 @@
 #include "testharness.h"
 #include "third_party/absl/strings/str_cat.h"
 #include "third_party/absl/strings/str_format.h"
+#include "third_party/absl/strings/string_view.h"
 #include "util.h"
 
 namespace sentencepiece {
@@ -28,7 +29,7 @@ namespace sentencepiece {
 #define WS "\xe2\x96\x81"
 
 // Converts the 1 unicode string to the code point.
-static char32 ToChar32(absl::string_view str) {
+static char32_t ToChar32(absl::string_view str) {
   string_util::UnicodeText utext = string_util::UTF8ToUnicodeText(str);
   return !utext.empty() ? *utext.begin() : 0;
 }
@@ -45,7 +46,7 @@ TEST(TrainerInterfaceTest, IsValidSentencePieceTest) {
   EXPECT_TRUE(trainer.Train().ok());
 
   auto IsValid = [&trainer_spec, &normalizer_spec,
-                  &denormalizer_spec](const std::string &str) {
+                  &denormalizer_spec](const std::string& str) {
     TrainerInterface trainer(trainer_spec, normalizer_spec, denormalizer_spec);
     const string_util::UnicodeText text = string_util::UTF8ToUnicodeText(str);
     return trainer.IsValidSentencePiece(text);
@@ -435,7 +436,7 @@ TEST(TrainerInterfaceTest, BytePiecesTest) {
 
   // Byte pieces come after control symbols and user-defined symbols.
   for (int i = 0; i < 256; ++i) {
-    const auto &piece = trainer.meta_pieces_[i + 7];
+    const auto& piece = trainer.meta_pieces_[i + 7];
     EXPECT_EQ(absl::StrFormat("<0x%02X>", i), piece.first);
     EXPECT_EQ(ModelProto::SentencePiece::BYTE, piece.second);
   }
@@ -516,7 +517,7 @@ TEST(TrainerInterfaceTest, CharactersTest) {
   trainer_spec.set_model_prefix("model");
   trainer_spec.set_character_coverage(0.98);
 
-  using E = absl::flat_hash_map<char32, int64_t>;
+  using E = absl::flat_hash_map<char32_t, int64_t>;
   {
     TrainerInterface trainer(trainer_spec, normalizer_spec, denormalizer_spec);
     EXPECT_OK(trainer.LoadSentences());

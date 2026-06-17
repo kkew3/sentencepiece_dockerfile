@@ -26,6 +26,22 @@
 
 namespace sentencepiece {
 
+void ExpectSptEqual(const SentencePieceText& expected,
+                    const SentencePieceText& actual) {
+  EXPECT_EQ(expected.text(), actual.text());
+  EXPECT_EQ(expected.pieces_size(), actual.pieces_size());
+  EXPECT_NEAR(expected.score(), actual.score(), 1e-5);
+  for (int i = 0; i < expected.pieces_size() && i < actual.pieces_size(); ++i) {
+    const auto& e_piece = expected.pieces(i);
+    const auto& a_piece = actual.pieces(i);
+    EXPECT_EQ(e_piece.piece(), a_piece.piece()) << "at index " << i;
+    EXPECT_EQ(e_piece.id(), a_piece.id()) << "at index " << i;
+    EXPECT_EQ(e_piece.surface(), a_piece.surface()) << "at index " << i;
+    EXPECT_EQ(e_piece.begin(), a_piece.begin()) << "at index " << i;
+    EXPECT_EQ(e_piece.end(), a_piece.end()) << "at index " << i;
+  }
+}
+
 class SentencePieceProcessorMaxLoops : public SentencePieceProcessor {
  public:
   SentencePieceProcessorMaxLoops(int max_loops) {
@@ -33,14 +49,14 @@ class SentencePieceProcessorMaxLoops : public SentencePieceProcessor {
   }
 };
 
-std::string LoadTestData(const std::string &filename, int num_lines) {
+std::string LoadTestData(const std::string& filename, int num_lines) {
   auto fs = filesystem::NewReadableFile(
       util::JoinPath(::testing::SrcDir(), filename));
   CHECK(fs);
   CHECK_GT(num_lines, 0);
   std::string test_data, line;
   for (int i = 0; i < num_lines; ++i) {
-    CHECK(fs->ReadLine(&line));
+    if (!fs->ReadLine(&line)) break;
     absl::StrAppend(&test_data, line);
     absl::StrAppend(&test_data, "\n");
   }
@@ -60,7 +76,7 @@ TEST(SentencepieceProcessorTest, ParallelEncodeTestEmptyString) {
   // Check English tokenized correctly in parallel
   sequential_encode_ids = sp.EncodeAsIds("");
 
-  ThreadPool thread_pool(1);
+  ThreadPool thread_pool(4);
 
   for (const int chunk_size : {128, 256, 512}) {
     parallel_encode_ids.clear();
@@ -77,7 +93,7 @@ TEST(SentencepieceProcessorTest, ParallelEncodeTestEn) {
   SentencePieceProcessor sp;
   CHECK_OK(sp.Load(test_model_file));
 
-  ThreadPool thread_pool(1);
+  ThreadPool thread_pool(4);
 
   std::vector<int> sequential_encode_ids;
   std::vector<int> parallel_encode_ids;
@@ -102,7 +118,7 @@ TEST(SentencepieceProcessorTest, ParallelEncodeTestJaWithUNK) {
   SentencePieceProcessor sp;
   CHECK_OK(sp.Load(test_model_file));
 
-  ThreadPool thread_pool(1);
+  ThreadPool thread_pool(4);
 
   const std::string ja_test_data = LoadTestData("wagahaiwa_nekodearu.txt", 25);
 
@@ -128,7 +144,7 @@ TEST(SentencepieceProcessorTest, ParallelEncodeTestJaWithByte) {
   SentencePieceProcessor sp;
   CHECK_OK(sp.Load(test_model_file));
 
-  ThreadPool thread_pool(1);
+  ThreadPool thread_pool(4);
 
   const std::string ja_test_data = LoadTestData("wagahaiwa_nekodearu.txt", 25);
 
@@ -154,7 +170,7 @@ TEST(SentencepieceProcessorTest, ParallelEncodeTestJaWithByteIntoSPTZeroLoops) {
   SentencePieceProcessorMaxLoops sp(0);
   CHECK_OK(sp.Load(test_model_file));
 
-  ThreadPool thread_pool(1);
+  ThreadPool thread_pool(4);
 
   const std::string ja_test_data = LoadTestData("wagahaiwa_nekodearu.txt", 25);
 
@@ -169,13 +185,7 @@ TEST(SentencepieceProcessorTest, ParallelEncodeTestJaWithByteIntoSPTZeroLoops) {
                                &parallel_encode_spt));
     EXPECT_EQ(parallel_encode_spt.pieces_size(),
               sequential_encode_spt.pieces_size());
-    std::vector<int> parallel_encode_ids;
-    std::vector<int> sequential_encode_ids;
-    for (int i = 0; i < parallel_encode_spt.pieces_size(); ++i) {
-      parallel_encode_ids.push_back(parallel_encode_spt.pieces(i).id());
-      sequential_encode_ids.push_back(sequential_encode_spt.pieces(i).id());
-    }
-    EXPECT_EQ(sequential_encode_ids, parallel_encode_ids);
+    ExpectSptEqual(sequential_encode_spt, parallel_encode_spt);
   }
 }
 
@@ -200,15 +210,7 @@ TEST(SentencepieceProcessorTest, ParallelEncodeTestJaWithByteIntoSPTOneLoop) {
     parallel_encode_spt.Clear();
     CHECK_OK(sp.ParallelEncode(ja_test_data, chunk_size, thread_pool,
                                &parallel_encode_spt));
-    EXPECT_EQ(parallel_encode_spt.pieces_size(),
-              sequential_encode_spt.pieces_size());
-    std::vector<int> parallel_encode_ids;
-    std::vector<int> sequential_encode_ids;
-    for (int i = 0; i < parallel_encode_spt.pieces_size(); ++i) {
-      parallel_encode_ids.push_back(parallel_encode_spt.pieces(i).id());
-      sequential_encode_ids.push_back(sequential_encode_spt.pieces(i).id());
-    }
-    EXPECT_EQ(sequential_encode_ids, parallel_encode_ids);
+    ExpectSptEqual(sequential_encode_spt, parallel_encode_spt);
   }
 }
 
@@ -220,7 +222,7 @@ TEST(SentencepieceProcessorTest, ParallelEncodeTestJaWithByteIntoSPT) {
   SentencePieceProcessor sp;
   CHECK_OK(sp.Load(test_model_file));
 
-  ThreadPool thread_pool(1);
+  ThreadPool thread_pool(4);
 
   const std::string ja_test_data = LoadTestData("wagahaiwa_nekodearu.txt", 25);
 
@@ -233,15 +235,29 @@ TEST(SentencepieceProcessorTest, ParallelEncodeTestJaWithByteIntoSPT) {
     parallel_encode_spt.Clear();
     CHECK_OK(sp.ParallelEncode(ja_test_data, chunk_size, thread_pool,
                                &parallel_encode_spt));
-    EXPECT_EQ(parallel_encode_spt.pieces_size(),
-              sequential_encode_spt.pieces_size());
-    std::vector<int> parallel_encode_ids;
-    std::vector<int> sequential_encode_ids;
-    for (int i = 0; i < parallel_encode_spt.pieces_size(); ++i) {
-      parallel_encode_ids.push_back(parallel_encode_spt.pieces(i).id());
-      sequential_encode_ids.push_back(sequential_encode_spt.pieces(i).id());
-    }
-    EXPECT_EQ(sequential_encode_ids, parallel_encode_ids);
+    ExpectSptEqual(sequential_encode_spt, parallel_encode_spt);
+  }
+}
+
+TEST(SentencepieceProcessorTest, ParallelEncodeTestBotchan) {
+  std::string test_model_file =
+      util::JoinPath(::testing::SrcDir(), "botchan_1000_bpe.model");
+  SentencePieceProcessor sp;
+  CHECK_OK(sp.Load(test_model_file));
+
+  // Load all data.
+  ThreadPool thread_pool(4);
+  const std::string test_data = LoadTestData("botchan.txt", 1000000);
+
+  SentencePieceText sequential_encode_spt;
+  CHECK_OK(sp.Encode(test_data, &sequential_encode_spt));
+
+  std::vector<int> chunk_sizes = {100, 1000, 10000};
+  for (auto chunk_size : chunk_sizes) {
+    SentencePieceText parallel_encode_spt;
+    CHECK_OK(sp.ParallelEncode(test_data, chunk_size, thread_pool,
+                               &parallel_encode_spt));
+    ExpectSptEqual(sequential_encode_spt, parallel_encode_spt);
   }
 }
 

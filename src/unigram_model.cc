@@ -30,6 +30,8 @@
 #include "third_party/absl/random/random.h"
 #include "third_party/absl/strings/str_split.h"
 #include "third_party/absl/strings/string_view.h"
+#include "third_party/absl/time/clock.h"
+#include "third_party/absl/time/time.h"
 #include "util.h"
 
 namespace sentencepiece {
@@ -371,6 +373,9 @@ std::vector<Lattice::LatticePathWithScore> Lattice::NBest(size_t nbest_size,
     return {Viterbi()};
   }
 
+  const int timeout_ms = sentencepiece::GetNBestTimeout();
+  const absl::Time start_time = absl::Now();
+
   // Uses A* search to enumerate N-bests.
   // Given a lattice, enumerates hypotheses (paths) from EOS.
   // At each partial path x, compute f(x) as follows
@@ -498,6 +503,15 @@ std::vector<Lattice::LatticePathWithScore> Lattice::NBest(size_t nbest_size,
     constexpr int kMaxAgendaSize = 10000;
     constexpr int kMinAgendaSize = 512;
     if (agenda.size() >= kMaxAgendaSize) {
+      if (timeout_ms > 0) {
+        const auto elapsed =
+            absl::ToInt64Milliseconds(absl::Now() - start_time);
+        if (elapsed >= timeout_ms) {
+          LOG(WARNING) << "NBest search timed out after " << elapsed << " ms. "
+                       << "Falling back to Viterbi best path.";
+          return {Viterbi()};
+        }
+      }
       // Keeps the top `kMinAgendaSize` hypothesis.
       Agenda new_agenda;
       // Keeps the top hypothesis and the ones on their "next" paths.
@@ -578,10 +592,15 @@ void Model::PopulateNodes(Lattice *lattice) const {
     const char *begin = lattice->surface(begin_pos);
 
     // Finds all pieces which are prefix of surface(begin_pos).
-    const size_t num_nodes = trie_->commonPrefixSearch(
-        begin, trie_results.data(), trie_results.size(),
-        static_cast<int>(end - begin));
-    CHECK_LT(num_nodes, trie_results.size());
+    size_t num_nodes = trie_->commonPrefixSearch(begin, trie_results.data(),
+                                                 trie_results.size(),
+                                                 static_cast<int>(end - begin));
+    if (num_nodes > trie_results.size()) {
+      trie_results.resize(num_nodes + 1);
+      num_nodes = trie_->commonPrefixSearch(begin, trie_results.data(),
+                                            trie_results.size(),
+                                            static_cast<int>(end - begin));
+    }
 
     bool has_single_node = false;
 
@@ -623,7 +642,7 @@ void Model::BuildTrie(std::vector<std::pair<absl::string_view, int>> *pieces) {
   if (!status().ok()) return;
 
   if (pieces->empty()) {
-    status_ = util::InternalError("no pieces are loaded.");
+    status_ = absl::InternalError("no pieces are loaded.");
     return;
   }
 
@@ -644,7 +663,7 @@ void Model::BuildTrie(std::vector<std::pair<absl::string_view, int>> *pieces) {
   trie_ = std::make_unique<Darts::DoubleArray>();
   if (trie_->build(key.size(), const_cast<char **>(&key[0]),
                    const_cast<size_t *>(&length[0]), &value[0]) != 0) {
-    status_ = util::InternalError("cannot build double-array.");
+    status_ = absl::InternalError("cannot build double-array.");
     return;
   }
 
@@ -662,7 +681,7 @@ void Model::BuildTrie(std::vector<std::pair<absl::string_view, int>> *pieces) {
   pieces_.clear();
 
   if (trie_results_size_ == 0)
-    status_ = util::InternalError("no entry is found in the trie.");
+    status_ = absl::InternalError("no entry is found in the trie.");
 }
 
 Model::Model(const ModelProto &model_proto) {
