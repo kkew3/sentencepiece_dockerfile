@@ -124,6 +124,25 @@ class TestNumpyIntegration(unittest.TestCase):
         decoded_64 = self.sp.decode(ids_2d_64)
         self.assertEqual(decoded_64, [text, text])
 
+    def test_decode_numpy_non_contiguous(self):
+        text = "This is a test sentence."
+        ids = self.sp.encode(text, return_type=int)
+
+        for dtype in (np.int32, np.int64):
+            arr = np.array(ids, dtype=dtype)
+
+            # Reversed view: negative stride, data pointer at the last element.
+            reversed_view = arr[::-1]
+            self.assertFalse(reversed_view.flags['C_CONTIGUOUS'])
+            self.assertEqual(self.sp.decode(reversed_view),
+                             self.sp.decode(list(ids[::-1])))
+
+            # Strided slice: stride larger than itemsize.
+            strided = arr[::2]
+            self.assertFalse(strided.flags['C_CONTIGUOUS'])
+            self.assertEqual(self.sp.decode(strided),
+                             self.sp.decode(list(ids[::2])))
+
     def test_decode_numpy_invalid_types(self):
         # Float array should fail
         ids_float = np.array([1.0, 2.0], dtype=np.float32)
@@ -217,6 +236,64 @@ class TestNumpyIntegration(unittest.TestCase):
         # Empty array decode
         decoded = self.sp.decode(np.array([], dtype=np.int32))
         self.assertEqual(decoded, "")
+
+    def test_decode_invalid_ids_numpy(self):
+        # kOutOfRange should map to IndexError for numpy inputs
+        with self.assertRaises(IndexError):
+            self.sp.decode(np.array([10000], dtype=np.int32))
+        with self.assertRaises(IndexError):
+            self.sp.decode(np.array([0, 10000], dtype=np.int32))
+        with self.assertRaises(IndexError):
+            self.sp.decode([np.array([10000], dtype=np.int32)])
+
+    def test_decode_numpy_batch_mixed(self):
+        texts = ["Hello world", "This is another test."]
+        ids_list = self.sp.encode(texts, return_type=int)
+        
+        # Mix of read-only and writable numpy arrays in a list
+        arr1 = np.array(ids_list[0], dtype=np.int32)
+        arr1.flags.writeable = False
+        arr2 = np.array(ids_list[1], dtype=np.int32)
+        
+        decoded = self.sp.decode([arr1, arr2])
+        self.assertEqual(decoded, texts)
+
+    def test_native_batch_id_to_piece_numpy(self):
+        vocab_size = self.sp.vocab_size()
+        # Batch valid (numpy)
+        ids = np.array([0, 1, 2], dtype=np.int32)
+        pieces = self.sp.IdToPiece(ids)
+        self.assertIsInstance(pieces, list)
+        self.assertEqual(len(pieces), len(ids))
+        for i, p in zip(ids, pieces):
+            self.assertEqual(p, self.sp.IdToPiece(int(i)))
+
+        # Invalid ID in numpy array
+        with self.assertRaises(IndexError):
+            self.sp.IdToPiece(np.array([0, -1], dtype=np.int32))
+        with self.assertRaises(IndexError):
+            self.sp.IdToPiece(np.array([0, vocab_size], dtype=np.int32))
+
+    def test_native_batch_other_id_methods_numpy(self):
+        vocab_size = self.sp.vocab_size()
+        methods = [
+            self.sp.GetScore,
+            self.sp.IsUnknown,
+            self.sp.IsControl,
+            self.sp.IsUnused,
+            self.sp.IsByte
+        ]
+        for method in methods:
+            # Batch valid (numpy)
+            res_numpy = method(np.array([0, 1], dtype=np.int32))
+            self.assertIsInstance(res_numpy, list)
+            self.assertEqual(len(res_numpy), 2)
+            
+            # Batch invalid (numpy)
+            with self.assertRaises(IndexError):
+                method(np.array([0, -1], dtype=np.int32))
+            with self.assertRaises(IndexError):
+                method(np.array([0, vocab_size], dtype=np.int32))
 
 if __name__ == '__main__':
     unittest.main()

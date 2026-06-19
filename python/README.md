@@ -394,7 +394,21 @@ normalizer = spm.SentencePieceNormalizer(
 )
 print(normalizer.normalize("Hello  World."))
 # Output: ▁Hello▁World.
+
+# Initialize from mapping list of tuples (source, target)
+norm_map = [
+    ('foo', 'bar'),
+    ('apple', 'orange'),
+]
+normalizer = spm.SentencePieceNormalizer(norm_map=norm_map)
+print(normalizer.normalize("foo apple"))
+# Output: bar orange
+
+# Decompile back to list of tuples
+print(normalizer.decompile())
+# Output: [('apple', 'orange'), ('foo', 'bar')] (sorted by Unicode code point of source)
 ```
+
 
 ### Model Training
 
@@ -424,6 +438,53 @@ unigram_model_trainer.cc(500) LOG(INFO) EM sub_iter=1 size=1100 obj=10.4069 num_
 trainer_interface.cc(595) LOG(INFO) Saving model: m.model
 trainer_interface.cc(619) LOG(INFO) Saving vocabs: m.vocab
 ```
+
+#### Training with a Custom Normalizer
+
+You can pass a pre-configured `SentencePieceNormalizer` instance to the trainer. This ensures the exact same normalization rules are packaged with the trained model.
+
+```python
+# 1. Create and configure a normalizer
+norm_map = [('foo', 'bar')]
+normalizer = spm.SentencePieceNormalizer(norm_map=norm_map, add_dummy_prefix=False, escape_whitespaces=True)
+
+# 2. Train using the normalizer instance
+spm.SentencePieceTrainer.train(
+    input='test/botchan.txt',
+    model_prefix='m',
+    vocab_size=1000,
+    normalizer=normalizer
+)
+```
+
+You can also extend pre-defined normalization rules (like 'nfkc') by decompiling them, appending your custom rules, and loading them back:
+
+```python
+# 1. Load pre-defined NFKC rules
+base_normalizer = spm.SentencePieceNormalizer(rule_name='nfkc')
+
+# 2. Decompile to get the base mapping list of tuples
+norm_map = base_normalizer.decompile()
+
+# 3. Add custom rules to the mapping list
+norm_map.append(('foo', 'bar'))
+norm_map.append(('apple', 'orange'))
+
+# 4. Create a new normalizer with the extended mapping
+# Note: we set escape_whitespaces=True as required by the trainer
+extended_normalizer = spm.SentencePieceNormalizer(norm_map=norm_map, add_dummy_prefix=False, escape_whitespaces=True)
+
+# 5. Train using the extended normalizer
+spm.SentencePieceTrainer.train(
+    input='test/botchan.txt',
+    model_prefix='m',
+    vocab_size=1000,
+    normalizer=extended_normalizer
+)
+```
+
+> [!IMPORTANT]
+> If you specify both `normalizer` and other normalizer-specific arguments (like `add_dummy_prefix`) in `train()`, a `ValueError` will be raised. You must configure these settings directly on the `SentencePieceNormalizer` instance instead of passing them as trainer arguments.
 
 ### Training without a Local Filesystem
 
@@ -530,35 +591,6 @@ with open("new.model", "wb") as f:
 sp2 = spm.SentencePieceProcessor(model_file="new.model")
 ```
 
-#### Example: Appending new tokens (unsupported)
-
-Appending new tokens to the end of the vocabulary is **not officially supported and comes with no guarantees**, as it changes the vocabulary size and indices, which can invalidate pre-trained embeddings.
-
-Here is a sample to add `USER_DEFINED` symbols. Note that there are multiple token types that behave differently during segmentation; see the [special symbols documentation](../doc/special_symbols.md) for details.
-
-```python
-from sentencepiece import sentencepiece_model_pb2 as model_pb2
-import sentencepiece as spm
-
-# 1. Load existing model
-model_proto = model_pb2.ModelProto()
-with open("old.model", "rb") as f:
-  model_proto.ParseFromString(f.read())
-
-# 2. List of new tokens to add
-new_tokens = ["<my_token_1>", "<my_token_2>"]
-
-# 3. Append to the end of the vocabulary
-for token in new_tokens:
-  new_piece = model_proto.pieces.add()
-  new_piece.piece = token
-  new_piece.score = 0.0
-  new_piece.type = model_pb2.ModelProto.SentencePiece.Type.USER_DEFINED
-
-# 4. Save the modified model
-with open("new.model", "wb") as f:
-  f.write(model_proto.SerializeToString())
-```
 
 ## Free-Threading Support
 Experimental support for no-GIL/Free-Threading has been introduced in v0.2.1. For more details, please refer to [this page](https://py-free-threading.github.io/).
@@ -620,29 +652,24 @@ Since v0.2.2, the SentencePiece Python wrapper has been migrated from SWIG to **
 
 This migration introduces a few changes to standard usage and output formats:
 
-### 1. Unified `return_type` Parameter
+### 1. BOS/EOS Behavior for USER_DEFINED Symbols
+
+Historically, `SentencePieceProcessor::bos_id()` and `eos_id()` returned `-1` if the corresponding tokens were defined as `USER_DEFINED` rather than `CONTROL`. However, the C++ `Encode` method with extra options (e.g. `bos`) still prepended the token, while the Python wrapper `encode(..., add_bos=True)` would prepend `-1` or crash.
+
+To resolve this inconsistency:
+*   **Behavior Alignment**: The behavior has been aligned to strictly respect the `CONTROL` token type requirement.
+*   **Strict Verification & Errors**: If the BOS/EOS tokens are defined as `USER_DEFINED` (which are essentially treated the same as `NORMAL` tokens, with no clear distinction in this context) or any type other than `CONTROL` (or if they are completely missing), trying to add them during encoding will now result in an error:
+    *   In C++, `SetEncodeExtraOptions("bos")` or `SetEncodeExtraOptions("eos")` will **fail** (return an error).
+    *   In Python, passing `add_bos=True` or `add_eos=True` to `encode()` will **raise a `ValueError`** (instead of silently ignoring it, prepending `-1`, or crashing).
+
+### 2. Unified `return_type` Parameter
 The previous parameter `out_type` has been renamed to **`return_type`** to better describe what the functions yield.
 *   **Backward Compatibility**: The name `out_type` remains supported as a deprecated keyword argument alias. Passing `out_type=int` will work exactly as before, mapping internally to `return_type=int`. Specifying both `return_type` and `out_type` at the same time is invalid and will raise a `ValueError`.
 
-### 2. Removal of `immutable_proto`
+### 3. Removal of `immutable_proto`
 The custom C++ wrapper classes (`ImmutableSentencePieceText`, `ImmutableNBestSentencePieceText`) have been **removed**. 
 *   Using `return_type='immutable_proto'` (or `out_type='immutable_proto'`) or helper methods like `EncodeAsImmutableProto` will now raise a `ValueError`.
 *   Use `return_type='proto'` or `EncodeAsProto` instead.
-
-### 3. Standard Python Protobuf Output
-When using `return_type='proto'`, the API now returns standard Python `protobuf` message instances (`sentencepiece_pb2.SentencePieceText`) populated via lazy deserialization.
-*   **Mutability & Hashing**: Unlike the old immutable wrappers, standard Python protobuf messages are **mutable** and **unhashable**. They cannot be used as keys in dictionaries or added to sets.
-*   **Byte Offsets**: The `begin` and `end` offsets inside the `SentencePiece` message represent **raw byte offsets** in the UTF-8 encoded string (matching the core C++ behavior), not Unicode character offsets. To slice a Python string using these offsets, you must first encode the string to UTF-8 bytes:
-    ```python
-    text = "吾輩は猫である。"
-    proto = sp.encode(text, return_type='proto')
-    
-    # Correct slicing using byte offsets
-    text_bytes = text.encode('utf-8')
-    for piece in proto.pieces:
-      surface = text_bytes[piece.begin:piece.end].decode('utf-8')
-      assert surface == piece.surface
-    ```
 
 ### 4. New Classmethod Factories
 To align with pythonic best practices and avoid overloaded constructor argument logic, `SentencePieceProcessor` now exposes clean classmethod factories to initialize processors:

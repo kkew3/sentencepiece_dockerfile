@@ -91,6 +91,17 @@ class TestSentencepieceProcessor(unittest.TestCase):
       piece = self.sp_.id_to_piece(i)
       self.assertEqual(i, self.sp_.piece_to_id(piece))
 
+  def test_decode_invalid_ids(self):
+    # kOutOfRange should map to IndexError
+    with self.assertRaises(IndexError):
+      self.sp_.decode([10000])
+    with self.assertRaises(IndexError):
+      self.sp_.decode([[0, 10000]])
+    with self.assertRaises(IndexError):
+      self.sp_.decode(10000)
+    with self.assertRaises(IndexError):
+      self.sp_.DecodeIds([10000])
+
   def test_roundtrip(self):
     text = 'I saw a girl with a telescope.'
     ids = self.sp_.EncodeAsIds(text)
@@ -235,6 +246,65 @@ class TestSentencepieceProcessor(unittest.TestCase):
       for line in file:
         sp.DecodePieces(sp.EncodeAsPieces(line))
         sp.DecodeIds(sp.EncodeAsIds(line))
+
+  def test_special_tokens_combinations(self):
+    tid = threading.get_native_id()
+
+    # 1. CONTROL (default)
+    spm.SentencePieceTrainer.train(
+        input=os.path.join(data_dir, 'botchan.txt'),
+        model_prefix=f'm_control_{tid}',
+        vocab_size=1000,
+    )
+    sp = spm.SentencePieceProcessor()
+    self.assertTrue(sp.Load(f'm_control_{tid}.model'))
+    self.assertNotEqual(-1, sp.bos_id())
+    self.assertEqual([sp.bos_id()] + sp.encode('a'), sp.encode('a', add_bos=True))
+    self.assertEqual(sp.encode('a') + [sp.eos_id()], sp.encode('a', add_eos=True))
+    self.assertEqual([sp.bos_id()] + sp.encode('a') + [sp.eos_id()], sp.encode('a', add_bos=True, add_eos=True))
+    
+    self.assertEqual([sp.IdToPiece(sp.bos_id())] + sp.encode('a', return_type=str), sp.encode('a', add_bos=True, return_type=str))
+
+    # 2. USER_DEFINED
+    spm.SentencePieceTrainer.train(
+        input=os.path.join(data_dir, 'botchan.txt'),
+        model_prefix=f'm_user_{tid}',
+        vocab_size=1000,
+        user_defined_symbols=['<s>', '</s>'],
+        bos_piece='<s>',
+        eos_piece='</s>',
+    )
+    sp = spm.SentencePieceProcessor()
+    self.assertTrue(sp.Load(f'm_user_{tid}.model'))
+    self.assertEqual(-1, sp.bos_id())
+    with self.assertRaises(ValueError):
+      sp.encode('a', add_bos=True)
+    with self.assertRaises(ValueError):
+      sp.encode('a', add_eos=True)
+    with self.assertRaises(ValueError):
+      sp.encode('a', add_bos=True, return_type=str)
+    with self.assertRaises(ValueError):
+      sp.encode('a', add_eos=True, return_type=str)
+
+    # 3. Missing (disabled)
+    spm.SentencePieceTrainer.train(
+        input=os.path.join(data_dir, 'botchan.txt'),
+        model_prefix=f'm_missing_{tid}',
+        vocab_size=1000,
+        bos_id=-1,
+        eos_id=-1,
+    )
+    sp = spm.SentencePieceProcessor()
+    self.assertTrue(sp.Load(f'm_missing_{tid}.model'))
+    self.assertEqual(-1, sp.bos_id())
+    with self.assertRaises(ValueError):
+      sp.encode('a', add_bos=True)
+    with self.assertRaises(ValueError):
+      sp.encode('a', add_eos=True)
+    with self.assertRaises(ValueError):
+      sp.encode('a', add_bos=True, return_type=str)
+    with self.assertRaises(ValueError):
+      sp.encode('a', add_eos=True, return_type=str)
 
   def test_train_iterator(self):
     tid = threading.get_native_id()
@@ -1063,6 +1133,69 @@ class TestSentencepieceProcessor(unittest.TestCase):
     sp = spm.SentencePieceNormalizer(rule_name='nfkc_cf')
     self.assertEqual('abc', sp.Normalize('ＡＢＣ'))
 
+  def test_normalizer_map(self):
+    norm_map = [
+        ('foo', 'bar'),
+        ('apple', 'orange'),
+    ]
+    sp = spm.SentencePieceNormalizer(norm_map=norm_map)
+    self.assertEqual('bar', sp.Normalize('foo'))
+    self.assertEqual('orange', sp.Normalize('apple'))
+    self.assertEqual('banana', sp.Normalize('banana'))
+    self.assertEqual('bar orange', sp.Normalize('foo apple'))
+
+    decompiled = sp.Decompile()
+    self.assertEqual(2, len(decompiled))
+    self.assertEqual('apple', decompiled[0][0])
+    self.assertEqual('orange', decompiled[0][1])
+    self.assertEqual('foo', decompiled[1][0])
+    self.assertEqual('bar', decompiled[1][1])
+
+    # Test invalid UTF-8, empty source, identity conversion, and duplicate keys.
+    self.assertRaises(ValueError, spm.SentencePieceNormalizer, norm_map=[(b'\xFF', b'bar')])
+    self.assertRaises(ValueError, spm.SentencePieceNormalizer, norm_map=[(b'foo', b'\xFF')])
+    self.assertRaises(ValueError, spm.SentencePieceNormalizer, norm_map=[('', 'bar')])
+    self.assertRaises(ValueError, spm.SentencePieceNormalizer, norm_map=[(b'', b'bar')])
+    self.assertRaises(ValueError, spm.SentencePieceNormalizer, norm_map=[('foo', 'foo')])
+    self.assertRaises(ValueError, spm.SentencePieceNormalizer, norm_map=[(b'foo', b'foo')])
+    self.assertRaises(ValueError, spm.SentencePieceNormalizer, norm_map=[('foo', 'bar'), ('foo', 'baz')])
+    self.assertRaises(ValueError, spm.SentencePieceNormalizer, norm_map=[(b'foo', b'bar'), (b'foo', b'baz')])
+
+  def test_trainer_with_normalizer(self):
+    tid = threading.get_native_id()
+    norm_map = [
+        ('foo', 'bar'),
+        ('apple', 'orange'),
+    ]
+    normalizer = spm.SentencePieceNormalizer(norm_map=norm_map, add_dummy_prefix=False, escape_whitespaces=True)
+
+    spm.SentencePieceTrainer.Train(
+        input=os.path.join(data_dir, 'botchan.txt'),
+        model_prefix=f'm_{tid}',
+        vocab_size=100,
+        normalizer=normalizer
+    )
+
+    sp_norm = spm.SentencePieceNormalizer(model_file=f'm_{tid}.model')
+    self.assertEqual('bar', sp_norm.Normalize('foo'))
+    self.assertEqual('orange', sp_norm.Normalize('apple'))
+
+    sp = spm.SentencePieceProcessor()
+    self.assertTrue(sp.Load(f'm_{tid}.model'))
+    pieces = sp.EncodeAsPieces('foo')
+    self.assertTrue(len(pieces) > 0)
+    self.assertNotEqual(pieces[0][0], '\u2581')
+
+    # Test conflict error
+    with self.assertRaises(ValueError):
+      spm.SentencePieceTrainer.Train(
+          input=os.path.join(data_dir, 'botchan.txt'),
+          model_prefix=f'm_{tid}_override',
+          vocab_size=100,
+          normalizer=normalizer,
+          add_dummy_prefix=True
+      )
+
   def test_override_normalize_spec(self):
     sp = spm.SentencePieceProcessor(
         model_file=os.path.join(HERE, 'test_model.model')
@@ -1373,6 +1506,100 @@ class TestSentencepieceProcessor(unittest.TestCase):
       sp.encode(text_str, return_type=bytes, return_bytes=False)
     with self.assertRaises(ValueError):
       sp.encode(text_str, return_type=int, return_bytes=True)
+
+  def test_native_batch_piece_to_id(self):
+    sp = self.sp_
+    valid_ids = [3, 4, 5]
+    valid_pieces = [sp.IdToPiece(i) for i in valid_ids]
+
+    # Single
+    self.assertEqual(sp.PieceToId(valid_pieces[0]), valid_ids[0])
+    self.assertEqual(sp.PieceToId("unknown_piece_xyz"), 0)
+
+    # Batch list
+    pieces_list = valid_pieces + ["unknown_piece_xyz"]
+    ids = sp.PieceToId(pieces_list)
+    self.assertIsInstance(ids, list)
+    self.assertEqual(ids[:-1], valid_ids)
+    self.assertEqual(ids[-1], 0)
+
+    # Batch tuple
+    pieces_tuple = tuple(valid_pieces)
+    ids_t = sp.PieceToId(pieces_tuple)
+    self.assertIsInstance(ids_t, list)
+    self.assertEqual(ids_t, valid_ids)
+
+    # Type error
+    with self.assertRaises(TypeError):
+      sp.PieceToId(123)
+    with self.assertRaises(TypeError):
+      sp.PieceToId([123])
+    with self.assertRaises(TypeError):
+      sp.PieceToId(["a", 123])
+
+  def test_native_batch_id_to_piece(self):
+    sp = self.sp_
+    vocab_size = sp.vocab_size()
+
+    # Single
+    piece = sp.IdToPiece(3)
+    self.assertIsInstance(piece, str)
+    with self.assertRaises(IndexError):
+      sp.IdToPiece(-1)
+    with self.assertRaises(IndexError):
+      sp.IdToPiece(vocab_size)
+
+    # Batch list
+    ids = [0, 1, 2, 3]
+    pieces = sp.IdToPiece(ids)
+    self.assertIsInstance(pieces, list)
+    for i, p in zip(ids, pieces):
+      self.assertEqual(p, sp.IdToPiece(i))
+    with self.assertRaises(IndexError):
+      sp.IdToPiece([0, -1, 2])
+    with self.assertRaises(IndexError):
+      sp.IdToPiece([0, vocab_size])
+
+    # Batch tuple
+    ids_t = (0, 1, 2)
+    pieces_t = sp.IdToPiece(ids_t)
+    self.assertIsInstance(pieces_t, list)
+
+    # Type error
+    with self.assertRaises(TypeError):
+      sp.IdToPiece("a")
+    with self.assertRaises(TypeError):
+      sp.IdToPiece(["a"])
+
+  def test_native_batch_other_id_methods(self):
+    sp = self.sp_
+    vocab_size = sp.vocab_size()
+    methods = [
+        sp.GetScore,
+        sp.IsUnknown,
+        sp.IsControl,
+        sp.IsUnused,
+        sp.IsByte
+    ]
+    for method in methods:
+      # Single
+      res = method(0)
+      with self.assertRaises(IndexError):
+        method(-1)
+      with self.assertRaises(IndexError):
+        method(vocab_size)
+      
+      # Batch list
+      res_batch = method([0, 1, 2])
+      self.assertIsInstance(res_batch, list)
+      self.assertEqual(len(res_batch), 3)
+      with self.assertRaises(IndexError):
+        method([0, -1])
+          
+      # Batch tuple
+      res_tuple = method((0, 1))
+      self.assertIsInstance(res_tuple, list)
+      self.assertEqual(len(res_tuple), 2)
 
 def suite():
   suite = unittest.TestSuite()

@@ -204,15 +204,17 @@ class SentencePieceProcessor:
         if model_file and model_proto:
             raise ValueError('model_file and model_proto must be exclusive.')
         if model_proto:
-            return self._processor.LoadFromSerializedProto(model_proto)
+            return self.LoadFromSerializedProto(model_proto)
         if model_file:
-            return self._processor.LoadFromFile(model_file)
+            return self.LoadFromFile(model_file)
         raise ValueError('Either model_file or model_proto must be specified.')
 
     def LoadFromFile(self, filename):
         return self._processor.LoadFromFile(filename)
 
     def LoadFromSerializedProto(self, serialized):
+        if hasattr(serialized, 'SerializeToString'):
+            serialized = serialized.SerializeToString()
         return self._processor.LoadFromSerializedProto(serialized)
 
     def Encode(self,
@@ -794,14 +796,20 @@ class SentencePieceTrainer:
 
         sentence_iterator = None
         model_writer = None
+        normalizer = None
         new_kwargs = {}
         for key, value in kwargs.items():
             if key in ['sentence_iterator', 'sentence_reader']:
                 sentence_iterator = value
             elif key in ['model_writer']:
                 model_writer = value
+            elif key in ['normalizer']:
+                normalizer = value
             else:
                 new_kwargs[key] = _encode(value)
+
+        if normalizer:
+            new_kwargs['_serialized_normalizer_spec'] = normalizer.serialized_normalizer_spec()
 
         if model_writer:
             if sentence_iterator:
@@ -826,27 +834,46 @@ class SentencePieceNormalizer:
     def __init__(self,
                  model_file=None,
                  model_proto=None,
+                 normalizer_spec=None,
                  rule_tsv=None,
                  rule_name=None,
+                 norm_map=None,
                  add_dummy_prefix=False,
                  escape_whitespaces=False,
                  remove_extra_whitespaces=False):
         self._normalizer = _sentencepiece.SentencePieceNormalizer()
-        
+
         if model_file:
             self._normalizer.LoadFromFile(model_file)
         elif model_proto:
+            if hasattr(model_proto, 'SerializeToString'):
+                model_proto = model_proto.SerializeToString()
             self._normalizer.LoadFromSerializedProto(model_proto)
+        elif normalizer_spec:
+            if hasattr(normalizer_spec, 'SerializeToString'):
+                normalizer_spec = normalizer_spec.SerializeToString()
+            self._normalizer.LoadFromSerializedNormalizerSpec(normalizer_spec)
         elif rule_tsv:
             self._normalizer.LoadFromRuleTSV(rule_tsv)
         elif rule_name:
             self._normalizer.LoadFromRuleName(rule_name)
+        elif norm_map:
+            self._normalizer.LoadFromMap(norm_map)
         else:
             raise ValueError('no model is specified')
 
         self._normalizer._SetProtoField('add_dummy_prefix', add_dummy_prefix)
         self._normalizer._SetProtoField('escape_whitespaces', escape_whitespaces)
         self._normalizer._SetProtoField('remove_extra_whitespaces', remove_extra_whitespaces)
+
+    def Decompile(self):
+        return self._normalizer.Decompile()
+
+    def serialized_model_proto(self):
+        return self._normalizer.serialized_model_proto()
+
+    def serialized_normalizer_spec(self):
+        return self._normalizer.serialized_normalizer_spec()
 
     def Normalize(self, input, with_offsets=None):
         if isinstance(input, list):
@@ -877,31 +904,14 @@ def _add_snake_case(classname):
         setattr(classname, k, v)
 
 
-def _batchnize(classname, name):
-    func = getattr(classname, name, None)
-    def _func(v, n):
-        if isinstance(n, int) and (n < 0 or n >= v.piece_size()):
-            raise IndexError('piece id is out of range.')
-        return func(v, n)
 
-    def _batched_func(self, arg):
-        if isinstance(arg, list):
-            return [_func(self, n) for n in arg]
-        else:
-            return _func(self, arg)
-
-    setattr(classname, name, _batched_func)
 
 
 # Run batchnize and snake_case on classes
 SentencePieceProcessor.Tokenize = SentencePieceProcessor.Encode
 SentencePieceProcessor.Detokenize = SentencePieceProcessor.Decode
 
-for m in [
-    'PieceToId', 'IdToPiece', 'GetScore', 'IsUnknown', 'IsControl', 'IsUnused',
-    'IsByte'
-]:
-    _batchnize(SentencePieceProcessor, m)
+
 
 _add_snake_case(SentencePieceProcessor)
 _add_snake_case(SentencePieceTrainer)
