@@ -102,9 +102,6 @@ class Lattice {
   // `theta` is a smoothing parameter.
   std::vector<Node*> Sample(float theta);
 
-  // Calculates the entropy of the lattice.
-  float CalculateEntropy(float theta) const;
-
   // Populates marginal probability of every node in this lattice.
   // |freq| is the frequency of the sentence.
   //  for (auto *node : all_nodes_) {
@@ -139,18 +136,7 @@ class Model : public ModelInterface {
   EncodeResult SampleEncode(absl::string_view normalized,
                             float theta) const override;
 
-  NBestEncodeResult SampleEncodeAndScore(absl::string_view normalized,
-                                         float theta, int samples, bool wor,
-                                         bool include_best) const override;
-
-  float CalculateEntropy(absl::string_view normalized,
-                         float theta) const override;
-
   bool IsSampleEncodeAvailable() const override { return true; }
-
-  bool IsSampleEncodeAndScoreAvailable() const override { return true; }
-
-  bool IsCalculateEntropyAvailable() const override { return true; }
 
   bool IsNBestEncodeAvailable() const override { return true; }
 
