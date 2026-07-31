@@ -42,77 +42,75 @@ def is_gil_disabled():
 
 
 def find_abseil_lib(search_root):
-  print('## searching abseil {}'.format(search_root))
+  print('## searching abseil and protobuf {}'.format(search_root))
   absl_libs = []
   ext = '.lib' if os.name == 'nt' else '.a'
+  valid_prefixes = (
+      'libabsl',
+      'absl',
+      'libprotobuf-lite',
+      'protobuf-lite',
+      'libutf8_validity',
+      'utf8_validity',
+  )
   for root, dirs, files in os.walk(search_root):
     for file in files:
-      if (
-          file.startswith('libabsl') or file.startswith('absl')
-      ) and file.endswith(ext):
+      if file.startswith(valid_prefixes) and file.endswith(ext):
         full_path = os.path.join(root, file)
-        absl_libs.append(full_path)
+        if full_path not in absl_libs:
+          absl_libs.append(full_path)
 
   print('## absl_libs={}'.format(' '.join(absl_libs)))
   return absl_libs
 
 
-def get_protobuf_includes():
-  prefix = '/I' if os.name == 'nt' else '-I'
-  paths = [
-      '../src/builtin_pb',
-      './sentencepiece/src/builtin_pb',
-      '../third_party/protobuf-lite',
-      './sentencepiece/third_party/protobuf-lite',
+def get_build_includes(build_dir, is_msvc=True):
+  prefix = '/I' if is_msvc else '-I'
+  candidates = [
+      os.path.join(build_dir, 'root', 'include'),
+      os.path.join(build_dir, 'src'),
+      os.path.join(build_dir, '_deps', 'protobuf-src', 'src'),
+      os.path.join(build_dir, '_deps', 'abseil-cpp-src'),
+      '../src',
+      './sentencepiece/src',
+      '../third_party/abseil-cpp',
+      './sentencepiece/third_party/abseil-cpp',
+      '..',
+      './sentencepiece',
   ]
-  return [prefix + os.path.normpath(p) for p in paths]
+  includes = []
+  seen = set()
+  for p in candidates:
+    norm = os.path.normpath(p)
+    if norm not in seen and os.path.exists(norm):
+      seen.add(norm)
+      includes.append(prefix + norm)
+  return includes
 
 
 def get_cflags_and_libs(root):
-  cflags = [
-      '-std=c++17',
-      '-I' + os.path.normpath(os.path.join(root, 'include')),
-  ] + get_protobuf_includes()
+  cflags = ['-std=c++20'] + get_build_includes(root, is_msvc=False)
   libs = []
-  if os.path.exists(os.path.join(root, 'lib/libsentencepiece.a')):
-    libs = [
-        os.path.join(root, 'lib/libsentencepiece.a'),
-        os.path.join(root, 'lib/libsentencepiece_train.a'),
-    ]
-  elif os.path.exists(os.path.join(root, 'lib64/libsentencepiece.a')):
-    libs = [
-        os.path.join(root, 'lib64/libsentencepiece.a'),
-        os.path.join(root, 'lib64/libsentencepiece_train.a'),
-    ]
+  for lib_name in ['libsentencepiece.a', 'libsentencepiece_train.a']:
+    for sub in ['lib', 'lib64', 'src', '']:
+      p = os.path.join(root, sub, lib_name)
+      if os.path.exists(p) and p not in libs:
+        libs.append(p)
+        break
   return cflags, libs
-
-
-def find_absl_include(is_msvc=True):
-  paths = []
-  if os.path.exists(os.path.join('..', 'third_party', 'abseil-cpp')):
-    paths.append(os.path.join('..', 'third_party', 'abseil-cpp'))
-    paths.append('..')
-  if os.path.exists(os.path.join('.', 'sentencepiece', 'third_party', 'abseil-cpp')):
-    paths.append(os.path.join('.', 'sentencepiece', 'third_party', 'abseil-cpp'))
-    paths.append(os.path.join('.', 'sentencepiece'))
-
-  prefix = '/I' if is_msvc else '-I'
-  return [prefix + os.path.normpath(p) for p in paths]
 
 
 class build_ext_unix(_build_ext):
   """Override build_extension to run cmake."""
 
   def build_extension(self, ext):
-    cflags, libs = get_cflags_and_libs('../build/root')
-    abseil_libs = find_abseil_lib('../build/third_party')
-    cflags.extend(find_absl_include(is_msvc=False))
+    cflags, libs = get_cflags_and_libs('../build')
+    abseil_libs = find_abseil_lib('../build')
 
     if len(libs) == 0:
       subprocess.check_call(['./build_bundled.sh', __version__])
-      cflags, libs = get_cflags_and_libs('./build/root')
-      abseil_libs = find_abseil_lib('./build/third_party')
-      cflags.extend(find_absl_include(is_msvc=False))
+      cflags, libs = get_cflags_and_libs('./build')
+      abseil_libs = find_abseil_lib('./build')
 
     # Fix compile on some versions of Mac OSX
     # See: https://github.com/neulab/xnmt/issues/199
@@ -164,25 +162,9 @@ class build_ext_win(_build_ext):
     arch = get_win_arch()
 
     if os.path.exists('..\\build_{}\\root\\lib'.format(arch)):
-      cflags = [
-          '/std:c++17',
-          '/I' + os.path.normpath('..\\build_{}\\root\\include'.format(arch)),
-      ] + get_protobuf_includes()
-      libs = [
-          '..\\build_{}\\root\\lib\\sentencepiece.lib'.format(arch),
-          '..\\build_{}\\root\\lib\\sentencepiece_train.lib'.format(arch),
-      ]
-      libs.extend(find_abseil_lib('..\\build_{}\\third_party'.format(arch)))
+      build_dir = '..\\build_{}'.format(arch)
     elif os.path.exists('..\\build\\root\\lib'):
-      cflags = [
-          '/std:c++17',
-          '/I' + os.path.normpath('..\\build\\root\\include'),
-      ] + get_protobuf_includes()
-      libs = [
-          '..\\build\\root\\lib\\sentencepiece.lib',
-          '..\\build\\root\\lib\\sentencepiece_train.lib',
-      ]
-      libs.extend(find_abseil_lib('..\\build\\third_party'))
+      build_dir = '..\\build'
     else:
       # build library locally with cmake and vc++.
       if arch == 'amd64':
@@ -214,17 +196,14 @@ class build_ext_win(_build_ext):
           '--parallel',
           '8',
       ])
-      cflags = [
-          '/std:c++17',
-          '/I' + os.path.normpath('.\\build\\root\\include'),
-      ] + get_protobuf_includes()
-      libs = [
-          '.\\build\\root\\lib\\sentencepiece.lib',
-          '.\\build\\root\\lib\\sentencepiece_train.lib',
-      ]
-      libs.extend(find_abseil_lib('.\\build\\third_party'))
+      build_dir = '.\\build'
 
-    cflags.extend(find_absl_include(is_msvc=True))
+    cflags = ['/std:c++17'] + get_build_includes(build_dir, is_msvc=True)
+    libs = [
+        os.path.join(build_dir, 'root', 'lib', 'sentencepiece.lib'),
+        os.path.join(build_dir, 'root', 'lib', 'sentencepiece_train.lib'),
+    ]
+    libs.extend(find_abseil_lib(build_dir))
 
     # on Windows, GIL flag is not set automatically.
     # https://docs.python.org/3/howto/free-threading-python.html
