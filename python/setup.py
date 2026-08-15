@@ -14,7 +14,6 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.!
 
-import codecs
 import glob
 import os
 import platform
@@ -28,8 +27,6 @@ try:
   from pybind11.setup_helpers import Pybind11Extension
 except ImportError:
   Pybind11Extension = None
-
-sys.path.append(os.path.join('.', 'test'))
 
 
 with open('src/sentencepiece/_version.py') as f:
@@ -70,6 +67,7 @@ def get_build_includes(build_dir, is_msvc=True):
       os.path.join(build_dir, 'root', 'include'),
       os.path.join(build_dir, 'src'),
       os.path.join(build_dir, '_deps', 'protobuf-src', 'src'),
+      os.path.join(build_dir, '_deps', 'protobuf-src', 'third_party', 'utf8_range'),
       os.path.join(build_dir, '_deps', 'abseil-cpp-src'),
       '../src',
       './sentencepiece/src',
@@ -108,7 +106,11 @@ class build_ext_unix(_build_ext):
     abseil_libs = find_abseil_lib('../build')
 
     if len(libs) == 0:
-      subprocess.check_call(['./build_bundled.sh', __version__])
+      cflags, libs = get_cflags_and_libs('./build')
+      abseil_libs = find_abseil_lib('./build')
+
+    if len(libs) == 0:
+      subprocess.check_call(['./build_bundled.sh'])
       cflags, libs = get_cflags_and_libs('./build')
       abseil_libs = find_abseil_lib('./build')
 
@@ -169,6 +171,8 @@ class build_ext_win(_build_ext):
       build_dir = '..\\build_{}'.format(arch)
     elif os.path.exists('..\\build\\root\\lib'):
       build_dir = '..\\build'
+    elif os.path.exists('.\\build\\root\\lib'):
+      build_dir = '.\\build'
     else:
       # build library locally with cmake and vc++.
       if arch == 'amd64':
@@ -186,7 +190,6 @@ class build_ext_win(_build_ext):
           '-B',
           'build',
           '-DSPM_ENABLE_SHARED=OFF',
-          #          '-DCMAKE_SHARED_LINKER_FLAGS="/OPT:REF /OPT:ICF /LTCG"',
           '-DCMAKE_INSTALL_PREFIX=build\\root',
       ])
       subprocess.check_call([
@@ -243,6 +246,7 @@ def copy_package_data():
       '../build/root/share/sentencepiece',
       './build/root/share/sentencepiece',
       '../data',
+      './sentencepiece/data',
   ])
 
   for filename in data:
