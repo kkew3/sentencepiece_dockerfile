@@ -23,26 +23,31 @@
 #include <utility>
 #include <vector>
 
+#include "absl/container/flat_hash_map.h"
+#include "absl/container/flat_hash_set.h"
+#include "absl/flags/flag.h"
+#include "absl/log/check.h"
+#include "absl/log/log.h"
+#include "absl/random/random.h"
+#include "absl/status/status.h"
+#include "absl/status/status_macros.h"
+#include "absl/strings/match.h"
+#include "absl/strings/numbers.h"
+#include "absl/strings/str_cat.h"
+#include "absl/strings/str_format.h"
+#include "absl/strings/str_join.h"
+#include "absl/strings/str_replace.h"
+#include "absl/strings/str_split.h"
+#include "absl/strings/string_view.h"
 #include "filesystem.h"
 #include "model_factory.h"
 #include "model_interface.h"
 #include "normalizer.h"
+#include "ret_check.h"
 #include "sentencepiece_processor.h"
 #include "sentencepiece_trainer.h"
-#include "third_party/absl/container/flat_hash_map.h"
-#include "third_party/absl/container/flat_hash_set.h"
-#include "third_party/absl/flags/flag.h"
-#include "third_party/absl/random/random.h"
-#include "third_party/absl/status/status.h"
-#include "third_party/absl/strings/match.h"
-#include "third_party/absl/strings/numbers.h"
-#include "third_party/absl/strings/str_cat.h"
-#include "third_party/absl/strings/str_format.h"
-#include "third_party/absl/strings/str_join.h"
-#include "third_party/absl/strings/str_replace.h"
-#include "third_party/absl/strings/str_split.h"
-#include "third_party/absl/strings/string_view.h"
 #include "unicode_script.h"
+#include "util.h"
 
 // NOTE: The following flags are experimental options for new L1 sparse Unigram
 // training. They will eventually be migrated to TrainerSpec
@@ -61,9 +66,11 @@ ABSL_FLAG(
     "When true (default), resets lambda penalty and re-estimates pure Unigram "
     "MLE probabilities on the selected vocabulary (Post-Lasso Debiased Mode).");
 ABSL_FLAG(float, seed_piece_length_power, 1.0f,
-          "power exponent beta for seed sentencepiece length weighting: score = freq * len^beta (default=1.0)");
+          "power exponent beta for seed sentencepiece length weighting: score "
+          "= freq * len^beta (default=1.0)");
 ABSL_FLAG(float, min_freq_alpha, 0.0f,
-          "dynamic minimum frequency factor alpha derived from Zipf law: min_freq = max(2, alpha * N / (K * ln(K))) (default=0.0)");
+          "dynamic minimum frequency factor alpha derived from Zipf law: "
+          "min_freq = max(2, alpha * N / (K * ln(K))) (default=0.0)");
 
 namespace sentencepiece {
 
@@ -99,7 +106,6 @@ absl::Status VerifySpec(const TrainerSpec& trainer_spec,
   CHECK_RANGE(trainer_spec.max_sentencepiece_length(), 1, 512);
   CHECK_RANGE(trainer_spec.num_sub_iterations(), 1, 10);
   CHECK_RANGE(trainer_spec.num_threads(), 1, 1024);
-  CHECK_RANGE(trainer_spec.self_test_sample_size(), 0, 1000);
   CHECK_RANGE(trainer_spec.shrinking_factor(), 0.5, 0.95);
   CHECK_RANGE(trainer_spec.max_sentence_length(), 10, 1073741824);
 #undef CHECK_RANGE
@@ -355,8 +361,8 @@ bool TrainerInterface::IsValidSentencePiece(
 }
 
 absl::Status TrainerInterface::LoadSentences() {
-  RETURN_IF_ERROR(status());
-  RETURN_IF_ERROR(VerifySpec(trainer_spec_, components_));
+  ABSL_RETURN_IF_ERROR(status());
+  ABSL_RETURN_IF_ERROR(VerifySpec(trainer_spec_, components_));
   RET_CHECK(sentences_.empty());
   RET_CHECK(required_chars_.empty());
   RET_CHECK(trainer_spec_.input_format().empty() ||
@@ -434,7 +440,7 @@ absl::Status TrainerInterface::LoadSentences() {
     }
   }
 
-  RETURN_IF_ERROR(components_.sentence_iterator->status());
+  ABSL_RETURN_IF_ERROR(components_.sentence_iterator->status());
 
 END:
   // Emits error message if any.
@@ -465,7 +471,7 @@ END:
     RET_CHECK(!sentences_.empty());
 
     ThreadPool pool(trainer_spec_.num_threads());
-    RETURN_IF_ERROR(RunBatch(
+    ABSL_RETURN_IF_ERROR(RunBatch(
         sentences_.size(),
         [&](size_t i) -> absl::Status {
           auto* s = &sentences_[i].first;
@@ -622,7 +628,7 @@ void TrainerInterface::SplitSentencesByWhitespace() {
 }
 
 absl::Status TrainerInterface::Serialize(ModelProto* model_proto) const {
-  RETURN_IF_ERROR(status());
+  ABSL_RETURN_IF_ERROR(status());
 
   // Duplicated sentencepiece is not allowed.
   absl::flat_hash_set<std::string> dup;
@@ -684,10 +690,10 @@ absl::Status TrainerInterface::SaveModel(absl::string_view filename) const {
   LOG(INFO) << "Saving model: " << filename;
   ModelProto model_proto;
 
-  RETURN_IF_ERROR(Serialize(&model_proto));
+  ABSL_RETURN_IF_ERROR(Serialize(&model_proto));
 
   auto output = filesystem::NewWritableFile(filename.data(), true);
-  RETURN_IF_ERROR(output->status());
+  ABSL_RETURN_IF_ERROR(output->status());
   output->Write(model_proto.SerializeAsString());
   return absl::OkStatus();
 }
@@ -695,9 +701,9 @@ absl::Status TrainerInterface::SaveModel(absl::string_view filename) const {
 absl::Status TrainerInterface::SaveVocab(absl::string_view filename) const {
   LOG(INFO) << "Saving vocabs: " << filename;
   ModelProto model_proto;
-  RETURN_IF_ERROR(Serialize(&model_proto));
+  ABSL_RETURN_IF_ERROR(Serialize(&model_proto));
   auto output = filesystem::NewWritableFile(filename);
-  RETURN_IF_ERROR(output->status());
+  ABSL_RETURN_IF_ERROR(output->status());
 
   for (const auto& piece : model_proto.pieces()) {
     if (piece.piece().find_first_of(" \t\r\n") != std::string::npos) {
@@ -723,10 +729,10 @@ absl::Status TrainerInterface::SaveVocab(absl::string_view filename) const {
 
 absl::Status TrainerInterface::Save() const {
   if (output_model_proto_ != nullptr) {
-    RETURN_IF_ERROR(Serialize(output_model_proto_));
+    ABSL_RETURN_IF_ERROR(Serialize(output_model_proto_));
   } else {
-    RETURN_IF_ERROR(SaveModel(trainer_spec_.model_prefix() + ".model"));
-    RETURN_IF_ERROR(SaveVocab(trainer_spec_.model_prefix() + ".vocab"));
+    ABSL_RETURN_IF_ERROR(SaveModel(trainer_spec_.model_prefix() + ".model"));
+    ABSL_RETURN_IF_ERROR(SaveVocab(trainer_spec_.model_prefix() + ".vocab"));
   }
   return absl::OkStatus();
 }
@@ -795,17 +801,18 @@ absl::Status TrainerInterface::InitMetaPieces() {
   };
 
   for (const auto& w : trainer_spec_.control_symbols()) {
-    RETURN_IF_ERROR(insert_meta_symbol(w, ModelProto::SentencePiece::CONTROL));
+    ABSL_RETURN_IF_ERROR(
+        insert_meta_symbol(w, ModelProto::SentencePiece::CONTROL));
   }
 
   for (const auto& w : trainer_spec_.user_defined_symbols()) {
-    RETURN_IF_ERROR(
+    ABSL_RETURN_IF_ERROR(
         insert_meta_symbol(w, ModelProto::SentencePiece::USER_DEFINED));
     if (trainer_spec_.model_type() == TrainerSpec::WORD &&
         normalizer_spec_.escape_whitespaces() &&
         !absl::StartsWith(w, TrainerInterface::kWSStr)) {
       // WORD model tokens include the escaped whitespace prefix.
-      RETURN_IF_ERROR(
+      ABSL_RETURN_IF_ERROR(
           insert_meta_symbol(absl::StrCat(TrainerInterface::kWSStr, w),
                              ModelProto::SentencePiece::USER_DEFINED));
     }
@@ -813,7 +820,7 @@ absl::Status TrainerInterface::InitMetaPieces() {
 
   if (trainer_spec_.byte_fallback()) {
     for (int i = 0; i < 256; ++i) {
-      RETURN_IF_ERROR(
+      ABSL_RETURN_IF_ERROR(
           insert_meta_symbol(ByteToPiece(i), ModelProto::SentencePiece::BYTE));
     }
   }

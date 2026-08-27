@@ -15,34 +15,21 @@
 #ifndef UTIL_H_
 #define UTIL_H_
 
-#include <cstdio>
-#include <cstring>
-
 #include <algorithm>
-#include <functional>
+#include <cstdint>
+#include <cstring>
 #include <memory>
 #include <random>
 #include <string>
-#include <thread>
-#include <utility>
+#include <type_traits>
 #include <vector>
 
-#include "common.h"
-#include "config.h"
-#include "sentencepiece_processor.h"
-#include "third_party/absl/base/internal/endian.h"
-#include "third_party/absl/base/thread_annotations.h"
-#include "third_party/absl/functional/any_invocable.h"
-#include "third_party/absl/numeric/bits.h"
-#include "third_party/absl/random/random.h"
-#include "third_party/absl/status/status.h"
-#include "third_party/absl/strings/ascii.h"
-#include "third_party/absl/strings/numbers.h"
-#include "third_party/absl/strings/str_cat.h"
-#include "third_party/absl/strings/str_format.h"
-#include "third_party/absl/strings/str_join.h"
-#include "third_party/absl/strings/string_view.h"
-#include "third_party/absl/synchronization/mutex.h"
+#include "absl/functional/any_invocable.h"
+#include "absl/random/random.h"
+#include "absl/status/status.h"
+#include "absl/strings/numbers.h"
+#include "absl/strings/str_cat.h"
+#include "absl/strings/string_view.h"
 
 static constexpr uint32_t kUnicodeError = 0xFFFD;
 
@@ -76,15 +63,6 @@ inline std::string EncodePOD(const T& value) {
   static_assert(std::is_trivially_copyable_v<T>,
                 "T must be trivially copyable");
   return {reinterpret_cast<const char*>(&value), sizeof(T)};
-}
-
-template <typename T>
-inline T HexToInt(absl::string_view value) {
-  T n = 0;
-  if (!absl::SimpleHexAtoi(value, &n)) {
-    return 0;
-  }
-  return n;
 }
 
 // Return length of a single UTF-8 source character
@@ -188,24 +166,7 @@ class ReservoirSampler {
 
 namespace util {
 
-inline std::string JoinPath(absl::string_view path) {
-  return {path.data(), path.size()};
-}
-
-template <typename... T>
-inline std::string JoinPath(absl::string_view first, const T&... rest) {
-#ifdef OS_WIN
-  return absl::StrCat(JoinPath(first), "\\", JoinPath(rest...));
-#else
-  return absl::StrCat(JoinPath(first), "/", JoinPath(rest...));
-#endif
-}
-
 std::vector<std::string> StrSplitAsCSV(absl::string_view text);
-
-#ifdef OS_WIN
-std::wstring Utf8ToWide(absl::string_view input);
-#endif
 
 }  // namespace util
 

@@ -50,7 +50,6 @@ option(SPM_TCMALLOC_STATIC "Link static library of TCMALLOC." OFF)
 option(SPM_ENABLE_NFKC_COMPILE "Compile NFKC tables using ICU" OFF)
 option(SPM_ENABLE_MSVC_MT_BUILD "Use /MT flag in MSVC build" OFF)
 option(SPM_DISABLE_EMBEDDED_DATA "Disable to embed pre-compiled data." OFF)
-option(SPM_NLCODEC_BPE "Build the NLCodec fast BPE trainer from contrib/nlcodec (adds --nlcodec_bpe flag)." OFF)
 option(SPM_CROSS_SYSTEM_PROCESSOR "Override system processor" "")
 
 set(SPM_ABSL_PROVIDER "module" CACHE STRING "Provider of absl library")
@@ -81,6 +80,10 @@ if((CMAKE_CXX_COMPILER_ID STREQUAL "Clang" AND
    (CMAKE_CXX_COMPILER_ID STREQUAL "GNU" AND
      CMAKE_CXX_COMPILER_VERSION VERSION_GREATER 8.0))
   string(APPEND CMAKE_CXX_FLAGS " -fmacro-prefix-map=${CMAKE_SOURCE_DIR}/=''")
+endif()
+
+if(WIN32)
+  add_compile_definitions(NOMINMAX)
 endif()
 
 if(CMAKE_SYSTEM_NAME STREQUAL "FreeBSD")
@@ -188,7 +191,7 @@ if (SPM_ABSL_PROVIDER STREQUAL "module")
   FetchContent_Declare(
     abseil-cpp
     GIT_REPOSITORY https://github.com/abseil/abseil-cpp.git
-    GIT_TAG 20260526.0
+    GIT_TAG 20260817.0
     GIT_SHALLOW TRUE
   )
   FetchContent_MakeAvailable(abseil-cpp)
@@ -228,7 +231,7 @@ if (SPM_PROTOBUF_PROVIDER STREQUAL "module")
   FetchContent_Declare(
     protobuf
     GIT_REPOSITORY https://github.com/protocolbuffers/protobuf.git
-    GIT_TAG v35.1
+    GIT_TAG v36.0
     GIT_SHALLOW TRUE
   )
   FetchContent_MakeAvailable(protobuf)

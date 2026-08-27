@@ -105,8 +105,9 @@ set(SPM_SRCS
   ${SPM_MODEL_PROTO_HDRS}
   ${SPM_MODEL_PROTO_SRCS}
   bpe_model.h
-  common.h
+  gtest_prod.h
   normalizer.h
+  ret_check.h
   util.h
   freelist.h
   filesystem.h
@@ -116,7 +117,6 @@ set(SPM_SRCS
   model_factory.h
   char_model.h
   model_interface.h
-  testharness.h
   unigram_model.h
   bpe_model.cc
   char_model.cc
@@ -158,7 +158,6 @@ set(SPM_TRAIN_SRCS
 set(SPM_TEST_SRCS
   ${SPM_PROTO_HDRS}
   ${SPM_MODEL_PROTO_HDRS}
-  testharness.h
   bpe_model_test.cc
   bpe_model_trainer_test.cc
   builder_test.cc
@@ -181,15 +180,6 @@ set(SPM_TEST_SRCS
   util_test.cc
   word_model_test.cc
   word_model_trainer_test.cc)
-
-if (SPM_NLCODEC_BPE)
-  set(NLCODEC_DIR ${CMAKE_CURRENT_SOURCE_DIR}/../contrib/nlcodec)
-  include_directories(${CMAKE_CURRENT_SOURCE_DIR}/..)
-  include_directories(${CMAKE_CURRENT_SOURCE_DIR})
-  add_compile_definitions(SPM_NLCODEC_BPE)
-  list(APPEND SPM_TRAIN_SRCS ${NLCODEC_DIR}/bpe_model_trainer_nlcodec.cc)
-  list(APPEND SPM_TEST_SRCS ${NLCODEC_DIR}/bpe_model_trainer_nlcodec_test.cc)
-endif()
 
 # ==============================================================================
 # 4. Library Targets (sentencepiece, sentencepiece_train)

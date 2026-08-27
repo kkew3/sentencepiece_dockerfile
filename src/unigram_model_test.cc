@@ -14,18 +14,19 @@
 
 #include "unigram_model.h"
 
+#include <gtest/gtest.h>
+
 #include <cmath>
 #include <limits>
 #include <map>
 #include <string>
 #include <vector>
 
+#include "absl/strings/str_cat.h"
+#include "absl/strings/str_join.h"
+#include "absl/strings/string_view.h"
 #include "sentencepiece_model.pb.h"
 #include "sentencepiece_processor.h"
-#include "testharness.h"
-#include "third_party/absl/strings/str_cat.h"
-#include "third_party/absl/strings/str_join.h"
-#include "third_party/absl/strings/string_view.h"
 #include "util.h"
 
 namespace sentencepiece {
@@ -836,29 +837,6 @@ TEST(UnigramModelTest, ControlSymbolsNoSegmentTest) {
     EXPECT_EQ("<u", result[0].first);
     EXPECT_EQ("nk>", result[1].first);
   }
-}
-
-TEST(UnigramModelTest, VerifyOutputsEquivalent) {
-  ModelProto model_proto = MakeBaseModelProto();
-
-  AddPiece(&model_proto, "abcd", 10.0);  // 3
-  AddPiece(&model_proto, "abc", 5.0);    // 4
-  AddPiece(&model_proto, "ab", 6.0);     // 5
-  AddPiece(&model_proto, "cd", 4.0);     // 6
-  AddPiece(&model_proto, "a", 4.0);      // 7
-  AddPiece(&model_proto, "b", 1.9);      // 8
-  AddPiece(&model_proto, "c", 2.0);      // 9
-  AddPiece(&model_proto, "d", 1.0);      // 10
-
-  Model model(model_proto);
-  // Equivalent outputs.
-  EXPECT_TRUE(model.VerifyOutputsEquivalent("", ""));
-  EXPECT_TRUE(model.VerifyOutputsEquivalent("a b", "a b"));
-  EXPECT_TRUE(model.VerifyOutputsEquivalent("abcd", "ab cd"));
-
-  // Inequivalent outputs.
-  EXPECT_FALSE(model.VerifyOutputsEquivalent("a", "a b"));
-  EXPECT_FALSE(model.VerifyOutputsEquivalent("ab", "a b"));
 }
 
 TEST(UnigramModelTest, ControlTokenMergeTest) {

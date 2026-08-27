@@ -15,21 +15,22 @@
 #ifndef MODEL_INTERFACE_H_
 #define MODEL_INTERFACE_H_
 
+#include <cstdint>
 #include <memory>
 #include <set>
 #include <string>
 #include <utility>
 #include <vector>
 
-#include "common.h"
+#include "absl/container/flat_hash_map.h"
+#include "absl/log/check.h"
+#include "absl/log/log.h"
+#include "absl/status/status.h"
+#include "absl/strings/string_view.h"
 #include "normalizer.h"
 #include "sentencepiece_model.pb.h"
 #include "sentencepiece_processor.h"
-#include "third_party/absl/container/flat_hash_map.h"
-#include "third_party/absl/status/status.h"
-#include "third_party/absl/strings/string_view.h"
 #include "third_party/darts_clone/darts.h"
-#include "util.h"
 
 namespace sentencepiece {
 
@@ -183,16 +184,6 @@ class ModelInterface {
   [[nodiscard]] virtual bool ByteFallbackEnabled() const {
     return (model_proto_ != nullptr) &&
            model_proto_->trainer_spec().byte_fallback();
-  }
-
-  // Verifies if the `expected` and `actual` outputs are equivalent. `expected`
-  // and `actual` are sentence pieces joined by space (` `). Normally it means
-  // that the two strings are identical. In some model, due to float rounding
-  // errors, the strings may not be identical, but they may be still equivalent
-  // provided their scores are close enough (by some espilon).
-  [[nodiscard]] virtual bool VerifyOutputsEquivalent(
-      absl::string_view expected, absl::string_view actual) const {
-    return expected == actual;
   }
 
  protected:

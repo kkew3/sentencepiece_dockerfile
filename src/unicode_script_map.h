@@ -14,11 +14,11 @@
 
 #ifndef UNICODE_SCRIPT_DATA_H_
 #define UNICODE_SCRIPT_DATA_H_
-#include "third_party/absl/container/flat_hash_map.h"
+#include "absl/container/flat_hash_map.h"
 namespace sentencepiece {
 namespace unicode_script {
 namespace {
-void InitTable(absl::flat_hash_map<char32_t, ScriptType> *smap) {
+void InitTable(absl::flat_hash_map<char32_t, ScriptType>* smap) {
   for (char32_t c = 0x0000; c <= 0x001F; ++c) (*smap)[c] = U_Common;
   (*smap)[0x0020] = U_Common;
   for (char32_t c = 0x0021; c <= 0x0023; ++c) (*smap)[c] = U_Common;

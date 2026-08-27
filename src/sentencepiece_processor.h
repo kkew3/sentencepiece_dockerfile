@@ -16,17 +16,15 @@
 #define SENTENCEPIECE_PROCESSOR_H_
 
 #include <cstdint>
-#include <cstring>
 #include <functional>
 #include <memory>
 #include <string>
-#include <string_view>
 #include <utility>
 #include <vector>
 
-#include "third_party/absl/status/status.h"
-#include "third_party/absl/strings/string_view.h"
-#include "third_party/absl/types/span.h"
+#include "absl/status/status.h"
+#include "absl/strings/string_view.h"
+#include "absl/types/span.h"
 
 namespace sentencepiece {
 

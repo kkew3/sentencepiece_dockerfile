@@ -14,21 +14,20 @@
 
 #include "bpe_model.h"
 
+#include <algorithm>
 #include <cstdint>
-#include <functional>
 #include <memory>
 #include <queue>
-#include <random>
 #include <utility>
 #include <vector>
 
+#include "absl/base/attributes.h"
+#include "absl/container/flat_hash_map.h"
+#include "absl/random/random.h"
+#include "absl/strings/string_view.h"
 #include "freelist.h"
 #include "model_interface.h"
 #include "sentencepiece_model.pb.h"
-#include "third_party/absl/base/attributes.h"
-#include "third_party/absl/container/flat_hash_map.h"
-#include "third_party/absl/random/random.h"
-#include "third_party/absl/strings/string_view.h"
 #include "util.h"
 
 namespace sentencepiece {
