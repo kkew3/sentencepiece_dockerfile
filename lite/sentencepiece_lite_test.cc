@@ -32,6 +32,7 @@
 #include <utility>
 #include <vector>
 
+#include "absl/numeric/bits.h"
 #include "absl/status/status.h"
 #include "flatbuffers/flatbuffers.h"
 #include "sentencepiece_lite_generated.h"
@@ -626,6 +627,12 @@ TEST(SentencePieceLiteSecurityTest, RejectNullOutput) {
 
   const std::vector<int> ids = {1};
   EXPECT_EQ(processor.Decode(ids, nullptr), StatusCode::kInvalidArgument);
+
+  std::string detok;
+  EXPECT_EQ(processor.Decode({-1}, &detok), StatusCode::kOutOfRange);
+  EXPECT_EQ(
+      processor.Decode({static_cast<int>(processor.vocab_size())}, &detok),
+      StatusCode::kOutOfRange);
 }
 
 TEST(SentencePieceModelConvertersTest, RejectNaNAndInfUnigramScores) {
@@ -862,11 +869,11 @@ TEST(SentencePieceModelConvertersTest, AdversarialEmbeddedNullByteInPiece) {
   p0->set_type(::sentencepiece::ModelProto::SentencePiece::UNKNOWN);
 
   auto* p1 = proto.add_pieces();
-  p1->set_piece(std::string("foo\0bar", 7));
+  p1->set_piece("foo\0bar", 7);
   p1->set_type(::sentencepiece::ModelProto::SentencePiece::NORMAL);
 
   auto* p2 = proto.add_pieces();
-  p2->set_piece(std::string("foo\0baz", 7));
+  p2->set_piece("foo\0baz", 7);
   p2->set_type(::sentencepiece::ModelProto::SentencePiece::NORMAL);
 
   auto status_or = ::sentencepiece::lite::ToFlatbuffer(proto);
@@ -906,6 +913,7 @@ TEST(SentencePieceLiteSecurityTest, NullAndCorruptedModelErrorHandling) {
   std::string output;
   std::vector<int> ids;
   std::vector<std::string_view> out_views;
+  EXPECT_FALSE(null_proc.CanSkipNormalization("hello"));
   EXPECT_EQ(null_proc.Normalize("hello", &output),
             ::sentencepiece::lite::StatusCode::kFailedPrecondition);
   EXPECT_EQ(null_proc.Encode("hello", &ids),
@@ -920,6 +928,7 @@ TEST(SentencePieceLiteSecurityTest, NullAndCorruptedModelErrorHandling) {
   auto bad_buffer = std::make_shared<std::string>("corrupted flatbuffer blob");
   ::sentencepiece::lite::SentencePieceLiteProcessor bad_proc(bad_buffer);
   EXPECT_NE(bad_proc.status(), ::sentencepiece::lite::StatusCode::kOk);
+  EXPECT_FALSE(bad_proc.CanSkipNormalization("hello"));
   EXPECT_EQ(bad_proc.Encode("hello", &ids),
             ::sentencepiece::lite::StatusCode::kFailedPrecondition);
 }
@@ -1238,7 +1247,7 @@ TEST_P(SentencePieceLiteTest, PretokenizeWithFunctionRefReceiver) {
   EXPECT_EQ(lite_processor_->PretokenizeAtSafeBoundaries(
                 normalized,
                 [&chunks_vector](std::string_view chunk) {
-                  chunks_vector.push_back(std::string(chunk));
+                  chunks_vector.emplace_back(chunk);
                 }),
             StatusCode::kOk);
 
@@ -1451,6 +1460,7 @@ TEST(SentencePieceLiteNormalizerTest, All16NormalizerSpecPermutations) {
       "日本語 と English 123 !?",
       "A B C D E F G",
       "  A   B   C  ",
+      "invalid\xff\xfeutf8",
   };
 
   for (int mask = 0; mask < 16; ++mask) {
@@ -1483,6 +1493,26 @@ TEST(SentencePieceLiteNormalizerTest, All16NormalizerSpecPermutations) {
 
       EXPECT_EQ(norm_fast, norm_with_offsets)
           << "Mismatch for mask=" << mask << " input=[" << input << "]";
+
+      const bool expected_can_skip =
+          input.empty() ||
+          (!add_dummy_prefix && !remove_extra_whitespaces &&
+           (!escape_whitespaces || input.find(' ') == std::string_view::npos) &&
+           input != "invalid\xff\xfeutf8");
+      EXPECT_EQ(processor.CanSkipNormalization(input), expected_can_skip)
+          << "CanSkipNormalization mismatch for mask=" << mask << " input=["
+          << input << "]";
+      if (processor.CanSkipNormalization(input)) {
+        EXPECT_EQ(norm_fast, input);
+      }
+
+      std::vector<int> encoded_ids;
+      std::vector<int> expected_ids;
+      ASSERT_EQ(processor.Encode(input, &encoded_ids), StatusCode::kOk);
+      ASSERT_EQ(processor.EncodeNormalized(norm_fast, &expected_ids),
+                StatusCode::kOk);
+      EXPECT_EQ(encoded_ids, expected_ids)
+          << "Encode mismatch for mask=" << mask << " input=[" << input << "]";
 
       if (input.empty() ||
           (remove_extra_whitespaces &&
@@ -1606,7 +1636,7 @@ TEST(SentencePieceModelConvertersTest, TreatNullByteAsUnused) {
 
   // 3: piece with null byte "\0"
   auto* sp3 = proto.add_pieces();
-  sp3->set_piece(std::string("\0", 1));
+  sp3->set_piece("\0", 1);
   sp3->set_type(::sentencepiece::ModelProto::SentencePiece::NORMAL);
   sp3->set_score(-1.0);
 
@@ -1704,6 +1734,333 @@ TEST(SentencePieceLiteTest, ByteFallbackWithoutUnkId) {
   ASSERT_TRUE(no_fb_res.ok());
   SentencePieceLiteProcessor bad_processor(*no_fb_res);
   EXPECT_NE(bad_processor.status(), StatusCode::kOk);
+}
+
+// Regression test: when a model carries a BYTE-typed piece without the full
+// contiguous 0x00..0xFF block, `IsByte(id)` is true while `IdToByte(id)`
+// returns -1. `Decode` must fall through to the normal piece branch instead of
+// taking the byte branch with nothing to emit (which used to leave `pieces[i]`
+// unset and make the back-patching loop compute `0 - 1`).
+TEST(SentencePieceLiteTest, DecodeByteTypedPieceWithoutByteFallbackMapping) {
+  ::sentencepiece::ModelProto proto;
+  auto* trainer_spec = proto.mutable_trainer_spec();
+  trainer_spec->set_model_type(::sentencepiece::TrainerSpec::UNIGRAM);
+  trainer_spec->set_unk_id(0);
+  trainer_spec->set_byte_fallback(false);
+
+  auto* piece_unk = proto.add_pieces();
+  piece_unk->set_piece("<unk>");
+  piece_unk->set_type(::sentencepiece::ModelProto::SentencePiece::UNKNOWN);
+  piece_unk->set_score(0.0f);
+
+  auto* piece_a = proto.add_pieces();
+  piece_a->set_piece("a");
+  piece_a->set_type(::sentencepiece::ModelProto::SentencePiece::NORMAL);
+  piece_a->set_score(-1.0f);
+
+  // A single BYTE piece: not the full contiguous 0x00..0xFF block, so
+  // byte_fallback_start_id_ remains -1 and IdToByte() will return -1.
+  auto* piece_byte = proto.add_pieces();
+  piece_byte->set_piece("<0x41>");
+  piece_byte->set_type(::sentencepiece::ModelProto::SentencePiece::BYTE);
+  piece_byte->set_score(-2.0f);
+
+  auto status_or = ToFlatbuffer(proto);
+  ASSERT_TRUE(status_or.ok()) << status_or.status();
+  SentencePieceLiteProcessor processor(*status_or);
+  ASSERT_EQ(processor.status(), StatusCode::kOk);
+
+  const int byte_id = processor.PieceToId("<0x41>");
+  ASSERT_GE(byte_id, 0);
+  ASSERT_EQ(processor.piece_type(byte_id), static_cast<int>(PieceType_BYTE));
+
+  const std::vector<int> ids = {byte_id};
+  std::string decoded;
+  std::vector<std::string_view> pieces;
+  ASSERT_EQ(processor.Decode(ids, &decoded, &pieces), StatusCode::kOk);
+  ASSERT_EQ(pieces.size(), 1U);
+
+  // The returned view must point inside `decoded` and never be a wild pointer.
+  const auto base = reinterpret_cast<uintptr_t>(decoded.data());
+  const auto piece_begin = reinterpret_cast<uintptr_t>(pieces[0].data());
+  EXPECT_GE(piece_begin, base);
+  EXPECT_LE(piece_begin + pieces[0].size(), base + decoded.size());
+}
+
+// Regression test: an unmapped BYTE piece sitting between two mapped byte
+// pieces falls through to the normal piece branch, which flushes the preceding
+// byte run and records a valid span before starting the next run.
+TEST(SentencePieceLiteTest, DecodeUnmappedByteBetweenMappedBytes) {
+  ::sentencepiece::ModelProto proto;
+  auto* trainer_spec = proto.mutable_trainer_spec();
+  trainer_spec->set_model_type(::sentencepiece::TrainerSpec::UNIGRAM);
+  trainer_spec->set_unk_id(0);
+  trainer_spec->set_byte_fallback(true);
+
+  auto* piece_unk = proto.add_pieces();
+  piece_unk->set_piece("<unk>");
+  piece_unk->set_type(::sentencepiece::ModelProto::SentencePiece::UNKNOWN);
+  piece_unk->set_score(0.0f);
+
+  // Full contiguous byte block so that byte_fallback_start_id_ is valid.
+  for (int i = 0; i < 256; ++i) {
+    char hex[8];
+    std::snprintf(hex, sizeof(hex), "<0x%02X>", i);
+    auto* bp = proto.add_pieces();
+    bp->set_piece(hex);
+    bp->set_type(::sentencepiece::ModelProto::SentencePiece::BYTE);
+    bp->set_score(-static_cast<float>(i + 1));
+  }
+
+  // An extra BYTE-typed piece outside the contiguous 0x00..0xFF block:
+  // IsByte() is true but IdToByte() returns -1.
+  auto* stray = proto.add_pieces();
+  stray->set_piece("<stray_byte>");
+  stray->set_type(::sentencepiece::ModelProto::SentencePiece::BYTE);
+  stray->set_score(-1.0f);
+
+  auto status_or = ToFlatbuffer(proto);
+  ASSERT_TRUE(status_or.ok()) << status_or.status();
+  SentencePieceLiteProcessor processor(*status_or);
+  ASSERT_EQ(processor.status(), StatusCode::kOk);
+
+  const int stray_id = processor.PieceToId("<stray_byte>");
+  const int byte_a = processor.PieceToId("<0x41>");
+  const int byte_b = processor.PieceToId("<0x42>");
+  ASSERT_GE(stray_id, 0);
+  ASSERT_GE(byte_a, 0);
+  ASSERT_GE(byte_b, 0);
+
+  // mapped, unmapped, mapped: the trailing mapped byte is the one that used to
+  // be left without an offset.
+  const std::vector<int> ids = {byte_a, stray_id, byte_b};
+  std::string decoded;
+  std::vector<std::string_view> pieces;
+  ASSERT_EQ(processor.Decode(ids, &decoded, &pieces), StatusCode::kOk);
+  ASSERT_EQ(pieces.size(), 3U);
+
+  const auto base = reinterpret_cast<uintptr_t>(decoded.data());
+  for (size_t i = 0; i < pieces.size(); ++i) {
+    const auto piece_begin = reinterpret_cast<uintptr_t>(pieces[i].data());
+    EXPECT_GE(piece_begin, base) << "piece " << i;
+    EXPECT_LE(piece_begin + pieces[i].size(), base + decoded.size())
+        << "piece " << i;
+  }
+}
+
+// Regression test: BPE merge-priority scores are converted with a narrowing
+// float-to-int32 cast. Non-finite or out-of-range scores coming from an
+// untrusted model proto must be rejected before reaching that cast.
+TEST(SentencePieceModelConvertersTest, RejectInvalidBpeScores) {
+  for (const float bad_score : {std::numeric_limits<float>::infinity(),
+                                -std::numeric_limits<float>::infinity(),
+                                std::numeric_limits<float>::quiet_NaN(),
+                                std::numeric_limits<float>::max(),
+                                -std::numeric_limits<float>::max()}) {
+    ::sentencepiece::ModelProto proto;
+    auto* trainer_spec = proto.mutable_trainer_spec();
+    trainer_spec->set_model_type(::sentencepiece::TrainerSpec::BPE);
+    trainer_spec->set_unk_id(0);
+
+    auto* piece_unk = proto.add_pieces();
+    piece_unk->set_piece("<unk>");
+    piece_unk->set_type(::sentencepiece::ModelProto::SentencePiece::UNKNOWN);
+    piece_unk->set_score(0.0f);
+
+    auto* piece1 = proto.add_pieces();
+    piece1->set_piece("ab");
+    piece1->set_type(::sentencepiece::ModelProto::SentencePiece::NORMAL);
+    piece1->set_score(bad_score);
+
+    auto status_or = ToFlatbuffer(proto);
+    EXPECT_FALSE(status_or.ok());
+    EXPECT_EQ(status_or.status().code(), absl::StatusCode::kInvalidArgument);
+  }
+}
+
+// Single-character BYTE, CONTROL, and UNUSED tokens in a BPE vocabulary must
+// not be emitted as surface tokens by EncodeBPE's initial character split.
+TEST(SentencePieceLiteTest, BpeInitialSingleCharFiltersInvisiblePieceTypes) {
+  ::sentencepiece::ModelProto proto;
+  auto* trainer_spec = proto.mutable_trainer_spec();
+  trainer_spec->set_model_type(::sentencepiece::TrainerSpec::BPE);
+  trainer_spec->set_unk_id(0);
+
+  auto* piece_unk = proto.add_pieces();
+  piece_unk->set_piece("<unk>");
+  piece_unk->set_type(::sentencepiece::ModelProto::SentencePiece::UNKNOWN);
+  piece_unk->set_score(0.0f);
+
+  auto* piece_ctrl = proto.add_pieces();
+  piece_ctrl->set_piece("a");
+  piece_ctrl->set_type(::sentencepiece::ModelProto::SentencePiece::CONTROL);
+  piece_ctrl->set_score(-1.0f);
+
+  auto* piece_byte = proto.add_pieces();
+  piece_byte->set_piece("b");
+  piece_byte->set_type(::sentencepiece::ModelProto::SentencePiece::BYTE);
+  piece_byte->set_score(-2.0f);
+
+  auto* piece_unused = proto.add_pieces();
+  piece_unused->set_piece("c");
+  piece_unused->set_type(::sentencepiece::ModelProto::SentencePiece::UNUSED);
+  piece_unused->set_score(-3.0f);
+
+  auto status_or = ToFlatbuffer(proto);
+  ASSERT_TRUE(status_or.ok()) << status_or.status();
+  SentencePieceLiteProcessor processor(*status_or);
+  ASSERT_EQ(processor.status(), StatusCode::kOk);
+
+  std::vector<int> ids;
+  ASSERT_EQ(processor.EncodeNormalized("abc", &ids), StatusCode::kOk);
+  EXPECT_EQ(ids, std::vector<int>({0}));
+}
+
+TEST_P(SentencePieceLiteTest, SkipNormalizationForUserDefinedPieces) {
+  ::sentencepiece::ModelProto proto = proto_;
+  // Fullwidth "＜ＵＳＥＲ＞" which nmt_nfkc would normally normalize to ASCII
+  // "<USER>". When registered as a USER_DEFINED token, normalizer must skip it.
+  constexpr std::string_view kUserDefinedFullwidth = "＜ＵＳＥＲ＞";
+  auto* user_piece = proto.add_pieces();
+  user_piece->set_piece(kUserDefinedFullwidth);
+  user_piece->set_type(
+      ::sentencepiece::ModelProto::SentencePiece::USER_DEFINED);
+  user_piece->set_score(0.0f);
+  const int user_piece_id = proto.pieces_size() - 1;
+
+  auto fbs_bytes_or = ::sentencepiece::lite::ToFlatbuffer(proto);
+  ASSERT_TRUE(fbs_bytes_or.ok()) << fbs_bytes_or.status();
+  SentencePieceLiteProcessor processor(*fbs_bytes_or);
+  ASSERT_EQ(processor.status(), StatusCode::kOk);
+
+  // Input has fullwidth 'Ａ', fullwidth "＜ＵＳＥＲ＞", and fullwidth 'Ｂ'.
+  // Fullwidth 'Ａ' and 'Ｂ' should be normalized to ASCII 'A' and 'B', while
+  // fullwidth "＜ＵＳＥＲ＞" must remain unnormalized and match
+  // `user_piece_id`.
+  const std::string input = "Ａ＜ＵＳＥＲ＞Ｂ";
+  std::string normalized;
+  ASSERT_EQ(processor.Normalize(input, &normalized), StatusCode::kOk);
+  EXPECT_EQ(normalized, "▁A＜ＵＳＥＲ＞B");
+
+  std::vector<int> ids;
+  ASSERT_EQ(processor.Encode(input, &ids), StatusCode::kOk);
+  EXPECT_NE(std::find(ids.begin(), ids.end(), user_piece_id), ids.end());
+}
+
+TEST_P(SentencePieceLiteTest, SwapPrecompiledCharsmapEndianRoundTrip) {
+  ASSERT_TRUE(proto_.has_normalizer_spec());
+  const std::string original = proto_.normalizer_spec().precompiled_charsmap();
+  if (original.size() <= sizeof(uint32_t)) {
+    return;
+  }
+
+  // Convert from little-endian (LE) to big-endian (BE) and verify header/trie
+  // words are byte-swapped while the trailing normalized string table is
+  // intact.
+  std::string buf = original;
+  SwapPrecompiledCharsmapEndian(&buf, /*from_little_endian=*/true);
+  EXPECT_NE(buf, original);
+
+  const uint32_t orig_word0 =
+      *reinterpret_cast<const uint32_t*>(original.data());
+  const uint32_t swapped_word0 = *reinterpret_cast<const uint32_t*>(buf.data());
+  EXPECT_EQ(swapped_word0, absl::byteswap(orig_word0));
+
+  // Convert back from big-endian (BE) to little-endian (LE) and verify exact
+  // round-trip identity.
+  SwapPrecompiledCharsmapEndian(&buf, /*from_little_endian=*/false);
+  EXPECT_EQ(buf, original);
+
+  // Edge cases: nullptr or buffer smaller than uint32_t is a safe no-op.
+  SwapPrecompiledCharsmapEndian<std::string>(nullptr);
+  std::string tiny = "ab";
+  SwapPrecompiledCharsmapEndian(&tiny);
+  EXPECT_EQ(tiny, "ab");
+}
+
+TEST(SentencePieceLiteTest, DecodeWithAndWithoutNonLeadingSpaceSymbols) {
+  auto add_normal_piece = [](::sentencepiece::ModelProto* proto,
+                             std::string_view piece, float score) {
+    auto* p = proto->add_pieces();
+    p->set_piece(piece);
+    p->set_type(::sentencepiece::ModelProto::SentencePiece::NORMAL);
+    p->set_score(score);
+  };
+
+  // 1. Model without non-leading spaces: every piece has at most a single
+  // leading "▁" (\xe2\x96\x81), exercising the fast-append path in Decode.
+  {
+    ::sentencepiece::ModelProto proto = MinimalUnigramProto();
+    add_normal_piece(&proto, "▁", -1.0f);
+    add_normal_piece(&proto, "▁hello", -2.0f);
+    add_normal_piece(&proto, "▁world", -3.0f);
+    add_normal_piece(&proto, "!", -4.0f);
+
+    auto status_or = ToFlatbuffer(proto);
+    ASSERT_TRUE(status_or.ok()) << status_or.status();
+    SentencePieceLiteProcessor processor(*status_or);
+    ASSERT_EQ(processor.status(), StatusCode::kOk);
+
+    std::string decoded;
+    std::vector<std::string_view> pieces;
+    ASSERT_EQ(processor.Decode({3, 4, 5}, &decoded, &pieces), StatusCode::kOk);
+    EXPECT_EQ(decoded, "hello world!");
+    EXPECT_EQ(pieces, (std::vector<std::string_view>{"hello", " world", "!"}));
+  }
+
+  // 2. Model with consecutive leading spaces ("▁▁") only, decoded with "▁▁" at
+  // BOS (is_bos_ws == true) and after BOS (is_bos_ws == false).
+  {
+    ::sentencepiece::ModelProto proto = MinimalUnigramProto();
+    add_normal_piece(&proto, "▁▁", -1.0f);  // This is two spaces.
+    add_normal_piece(&proto, "▁hello", -2.0f);
+    add_normal_piece(&proto, "▁world", -3.0f);
+
+    auto status_or = ToFlatbuffer(proto);
+    ASSERT_TRUE(status_or.ok()) << status_or.status();
+    SentencePieceLiteProcessor processor(*status_or);
+    ASSERT_EQ(processor.status(), StatusCode::kOk);
+
+    // "▁▁" at BOS (is_bos_ws == true): the first "▁" is stripped as the BOS
+    // dummy prefix and the second "▁" is converted to a leading space ' '.
+    std::string decoded;
+    std::vector<std::string_view> pieces;
+    ASSERT_EQ(processor.Decode({2, 3, 4}, &decoded, &pieces), StatusCode::kOk);
+    EXPECT_EQ(decoded, "  hello world");
+    EXPECT_EQ(pieces, (std::vector<std::string_view>{" ", " hello", " world"}));
+
+    // "▁▁" after BOS (is_bos_ws == false): both "▁" symbols are converted to
+    // spaces.
+    ASSERT_EQ(processor.Decode({3, 2, 4}, &decoded, &pieces), StatusCode::kOk);
+    EXPECT_EQ(decoded, "hello   world");
+    EXPECT_EQ(pieces, (std::vector<std::string_view>{"hello", "  ", " world"}));
+  }
+
+  // 3. Model with trailing ("foo▁") and internal ("a▁b", "▁bar▁baz") space
+  // symbols.
+  {
+    ::sentencepiece::ModelProto proto = MinimalUnigramProto();
+    add_normal_piece(&proto, "foo▁", -1.0f);
+    add_normal_piece(&proto, "a▁b", -2.0f);
+    add_normal_piece(&proto, "▁bar▁baz", -3.0f);
+
+    auto status_or = ToFlatbuffer(proto);
+    ASSERT_TRUE(status_or.ok()) << status_or.status();
+    SentencePieceLiteProcessor processor(*status_or);
+    ASSERT_EQ(processor.status(), StatusCode::kOk);
+
+    std::string decoded;
+    std::vector<std::string_view> pieces;
+    ASSERT_EQ(processor.Decode({4, 2, 3}, &decoded, &pieces), StatusCode::kOk);
+    EXPECT_EQ(decoded, "bar bazfoo a b");
+    EXPECT_EQ(pieces,
+              (std::vector<std::string_view>{"bar baz", "foo ", "a b"}));
+
+    ASSERT_EQ(processor.Decode({2, 4, 3}, &decoded, &pieces), StatusCode::kOk);
+    EXPECT_EQ(decoded, "foo  bar baza b");
+    EXPECT_EQ(pieces,
+              (std::vector<std::string_view>{"foo ", " bar baz", "a b"}));
+  }
 }
 
 }  // namespace

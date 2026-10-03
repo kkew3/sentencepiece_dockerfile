@@ -1559,6 +1559,11 @@ class TestSentencepieceProcessor(unittest.TestCase):
     # out_type works as alias for return_type
     self.assertEqual(sp.encode(text, out_type=int), ids)
     self.assertEqual(sp.decode(ids, out_type=str), text)
+    pieces = sp.encode(text, out_type=str)
+    self.assertEqual(sp.DecodeIds(ids, out_type=bytes), text.encode('utf-8'))
+    self.assertEqual(
+        sp.decode_pieces(pieces, out_type=bytes), text.encode('utf-8')
+    )
 
     # Cannot specify both
     with self.assertRaises(ValueError):
@@ -1590,6 +1595,12 @@ class TestSentencepieceProcessor(unittest.TestCase):
 
     sp = spm.SentencePieceNormalizer(model_proto=model_proto)
     self.assertEqual('KADOKAWAABC', sp.normalize('ＫＡＤＯＫＡＷＡABC'))
+
+  def test_normalizer_normalizer_spec(self):
+    spec = spm.SentencePieceNormalizer(
+        rule_name='nfkc_cf').serialized_normalizer_spec()
+    sp = spm.SentencePieceNormalizer(normalizer_spec=spec)
+    self.assertEqual('abc', sp.normalize('ＡＢＣ'))
 
   def test_encode_return_type_explicit(self):
     sp = self.sp_
