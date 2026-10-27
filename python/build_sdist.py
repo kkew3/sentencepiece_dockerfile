@@ -14,8 +14,8 @@ targets = [
     'config.h.in',
     'sentencepiece.pc.in',
     'src',
+    'lite',
     'third_party',
-    'data',
 ]
 
 os.makedirs('sentencepiece', exist_ok=True)
@@ -23,20 +23,29 @@ os.makedirs('sentencepiece', exist_ok=True)
 for item in targets:
   src = os.path.join('..', item)
   dst = os.path.join('sentencepiece', item)
-  if os.path.lexists(src):
-    if os.path.islink(src):
-      # Skip build-generated symlinks (e.g. third_party/absl)
-      continue
+  if os.path.exists(src):
     print(f'copying {src} -> {dst}')
     if os.path.isdir(src):
       shutil.copytree(
           src,
           dst,
           dirs_exist_ok=True,
-          ignore=shutil.ignore_patterns('absl', '*.pyc', '__pycache__'),
+          ignore=shutil.ignore_patterns('*.pyc', '__pycache__'),
       )
     else:
       shutil.copy2(src, dst)
+
+os.makedirs(os.path.join('sentencepiece', 'data'), exist_ok=True)
+for fname in os.listdir(os.path.join('..', 'data')):
+  src = os.path.join('..', 'data', fname)
+  if fname.endswith('.bin'):
+    dst = os.path.join('sentencepiece', 'data', fname)
+    print(f'copying {src} -> {dst}')
+    shutil.copy2(src, dst)
+  if fname.startswith('botchan') and os.path.isdir('test'):
+    dst = os.path.join('test', fname)
+    print(f'copying {src} -> {dst}')
+    shutil.copy2(src, dst)
 
 python_exe = sys.executable
 res = subprocess.run([python_exe, '-m', 'build', '--sdist'], check=False)

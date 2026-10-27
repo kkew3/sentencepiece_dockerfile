@@ -17,7 +17,6 @@
 #include <string>
 #include <vector>
 
-#include "absl/flags/flag.h"
 #include "absl/log/check.h"
 #include "absl/log/log.h"
 #include "absl/status/status.h"
@@ -537,8 +536,7 @@ absl::Status SentencePieceNormalizer::Decompile(
 absl::Status SentencePieceNormalizer::Normalize(absl::string_view input,
                                                 std::string* normalized) const {
   RET_CHECK(normalizer_);
-  std::vector<size_t> norm_to_orig;
-  return normalizer_->Normalize(input, normalized, &norm_to_orig);
+  return normalizer_->Normalize(input, normalized, /*norm_to_orig=*/nullptr);
 }
 
 absl::Status SentencePieceNormalizer::Normalize(
@@ -571,32 +569,16 @@ std::string SentencePieceNormalizer::serialized_normalizer_spec() const {
 
 void ConvertToUnicodeAlignment(absl::string_view orig, absl::string_view norm,
                                std::vector<size_t>* norm_to_orig) {
-  auto utf8_to_unicode_offsets = [](absl::string_view str) {
-    std::vector<int> utf8_to_unicode(str.size() + 1, 0);
-    size_t prev = 0;
-    int ulen = 0;
-    while (!str.empty()) {
-      const size_t mblen =
-          std::min(str.size(), static_cast<size_t>(std::max<int>(
-                                   1, string_util::OneCharLen(str.data()))));
-      for (size_t i = prev; i < prev + mblen; ++i) {
-        utf8_to_unicode[i] = ulen;
-      }
-      ++ulen;
-      prev += mblen;
-      str.remove_prefix(mblen);
-    }
-    utf8_to_unicode[prev] = ulen;
-    return utf8_to_unicode;
-  };
-
-  const auto orig_offsets = utf8_to_unicode_offsets(orig);
-  const auto norm_offsets = utf8_to_unicode_offsets(norm);
+  if (norm_to_orig == nullptr) return;
+  const auto orig_offsets = string_util::UTF8ToUnicodeOffsets(orig);
+  const auto norm_offsets = string_util::UTF8ToUnicodeOffsets(norm);
   if (orig_offsets.empty() || norm_offsets.empty()) return;
 
   std::vector<size_t> result(norm_offsets.back() + 1, 0);
   for (size_t i = 0; i < norm_to_orig->size(); ++i) {
-    result[norm_offsets[i]] = orig_offsets[(*norm_to_orig)[i]];
+    if (i < norm_offsets.size() && (*norm_to_orig)[i] < orig_offsets.size()) {
+      result[norm_offsets[i]] = orig_offsets[(*norm_to_orig)[i]];
+    }
   }
   *norm_to_orig = std::move(result);
 }

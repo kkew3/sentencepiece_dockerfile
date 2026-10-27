@@ -29,11 +29,6 @@ except ImportError:
   Pybind11Extension = None
 
 
-with open('src/sentencepiece/_version.py') as f:
-  line = f.readline().strip()
-  __version__ = line.split('=')[1].strip().strip("'")
-
-
 def is_gil_disabled():
   return sysconfig.get_config_var('Py_GIL_DISABLED')
 
@@ -49,6 +44,8 @@ def find_abseil_lib(search_root):
       'protobuf-lite',
       'libutf8_validity',
       'utf8_validity',
+      'libflatbuffers',
+      'flatbuffers',
   )
   for root, dirs, files in os.walk(search_root):
     for file in files:
@@ -71,8 +68,8 @@ def get_build_includes(build_dir, is_msvc=True):
       os.path.join(build_dir, '_deps', 'abseil-cpp-src'),
       '../src',
       './sentencepiece/src',
-      '../third_party/abseil-cpp',
-      './sentencepiece/third_party/abseil-cpp',
+      '../lite',
+      './sentencepiece/lite',
       '..',
       './sentencepiece',
   ]
@@ -127,25 +124,30 @@ class build_ext_unix(_build_ext):
       libs.extend(abseil_libs)
       libs.append('-Wl,-dead_strip')
       libs.append('-Wl,-exported_symbols_list,exports_mac.txt')
+    elif sys.platform == 'aix':
+      #  non GNU linker
+      libs.extend(abseil_libs)
+      libs.append('-Wl,-bE:exports_aix.txt')
+      cflags.append('-Wl,-s')
+      libs.append('-Wl,-s')
+      libs.append('-fopenmp')
+      cflags.append('-fopenmp')
     else:
       # GNU linker
-      libs.append('-Wl,--start-group')
-      libs.extend(abseil_libs)
-      libs.append('-lgomp')
-      libs.append('-Wl,--end-group')
+      libs = (
+          ['-Wl,--start-group']
+          + libs
+          + abseil_libs
+          + ['-lgomp', '-Wl,--end-group']
+      )
       libs.append('-Wl,--gc-sections')
       libs.append('-Wl,--version-script=exports.txt')
-      if sys.platform == 'aix':
-        cflags.append('-Wl,-s')
-        libs.append('-Wl,-s')
-      else:
-        cflags.append('-Wl,-strip-all')
-        libs.append('-Wl,-strip-all')
+      cflags.append('-Wl,-strip-all')
+      libs.append('-Wl,-strip-all')
 
     if sys.platform == 'linux':
       libs.append('-Wl,-Bsymbolic')
       libs.append('-fopenmp')
-      libs.append('-lgomp')
       cflags.append('-fopenmp')
 
     if is_gil_disabled():
@@ -182,14 +184,17 @@ class build_ext_win(_build_ext):
       else:
         raise RuntimeError(f"Unsupported architecture: {arch}")
 
+      cmake_src = 'sentencepiece' if os.path.exists('sentencepiece') else '..'
       subprocess.check_call([
           'cmake',
-          'sentencepiece',
+          cmake_src,
           '-A',
           cmake_arch,
           '-B',
           'build',
           '-DSPM_ENABLE_SHARED=OFF',
+          '-DSPM_ENABLE_LITE=OFF',
+          '-DSPM_DISABLE_EMBEDDED_DATA=ON',
           '-DCMAKE_INSTALL_PREFIX=build\\root',
       ])
       subprocess.check_call([
@@ -226,6 +231,14 @@ class build_ext_win(_build_ext):
 
 def copy_package_data():
   """Copies shared package data"""
+
+  test_dir = 'test'
+  if os.path.isdir(test_dir):
+    for filename in glob.glob(os.path.join('..', 'data', 'botchan*')):
+      dst = os.path.join(test_dir, os.path.basename(filename))
+      if not os.path.exists(dst):
+        print('## copying {} -> {}'.format(filename, dst))
+        shutil.copy(filename, dst)
 
   package_data = os.path.join('src', 'sentencepiece', 'package_data')
 

@@ -44,10 +44,10 @@
 // 5. Simplicity & Cleanliness: Avoid over-engineering, and keep the codebase
 //    clean, concise, and simple.
 
-#include <functional>
 #include <memory>
 #include <string>
 #include <string_view>
+#include <utility>
 #include <vector>
 
 #ifdef SENTENCEPIECE_LITE_USE_ABSL
@@ -151,9 +151,6 @@ class Model;
 
 // Main tokenization runtime processor executing Unigram and BPE tokenization
 // on FlatBuffers model binaries (.spm.fb).
-class SentencePieceLiteProcessor;
-using SentencePieceLite = SentencePieceLiteProcessor;
-
 class SentencePieceLiteProcessor {
  public:
   SentencePieceLiteProcessor() = delete;
@@ -173,7 +170,8 @@ class SentencePieceLiteProcessor {
 
   // Normalizes text using model rules. If not nullptr, `(*offset)[x]` stores
   // the byte index in `input` corresponding to `output[x]` (with a sentinel at
-  // `output->size()`).
+  // `output->size()`). If `output` is empty (e.g. empty or whitespace-only
+  // input), `offset` is also empty and has no sentinel.
   StatusCode Normalize(std::string_view input, std::string* output,
                        std::vector<size_t>* offset = nullptr) const;
 
@@ -254,7 +252,7 @@ class SentencePieceLiteProcessor {
                     std::vector<std::string_view>* pieces = nullptr) const;
 
   // Returns the ID of the given piece.
-  // Returns -1 if the piece is not found or if no model is loaded.
+  // Returns unk_id() if the piece is not found, or -1 if no model is loaded.
   int PieceToId(std::string_view piece) const;
 
   // Returns the string piece corresponding to the given ID.
@@ -293,7 +291,6 @@ class SentencePieceLiteProcessor {
   int piece_type(int id) const;
 
   // For testing/internal usage only.
-  bool HasNonNullDirectMappingVectorForTesting() const;
   void SetScoreResetThresholdForTesting(float threshold);
 
  private:

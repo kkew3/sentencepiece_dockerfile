@@ -86,7 +86,6 @@ class NBestSentencePieceText;
 class ModelInterface;
 class SentencePieceText;
 class ModelProto;
-class NormalizerSpec;
 
 namespace normalizer {
 class Normalizer;
@@ -137,10 +136,6 @@ absl::Status RunBatch(size_t total_tasks,
 namespace util {
 using bytes = std::string;
 }  // namespace util
-
-class NBestSentencePieceText;
-class ModelInterface;
-class SentencePieceText;
 
 class SentencePieceProcessor {
  public:
@@ -269,9 +264,6 @@ class SentencePieceProcessor {
 
   // chunk_len controls how long each chunk to be tokenized in parallel is.
   // For best results, set this to ~10000.
-
-  // WARNING: ParallelEncode with SentencePieceText * inputs currently does not
-  // copy the UNK surface form correctly. Use at your own risk!
   virtual absl::Status ParallelEncode(absl::string_view input, int chunk_len,
                                       ThreadPool& thread_pool,
                                       std::vector<std::string>* pieces) const;
@@ -372,7 +364,7 @@ class SentencePieceProcessor {
   [[nodiscard]] virtual int GetPieceSize() const;
 
   // Returns the vocab id of `piece`.
-  // Returns UNK(0) if `piece` is unknown.
+  // Returns `unk_id()` if `piece` is unknown.
   [[nodiscard]] virtual int PieceToId(absl::string_view piece) const;
 
   // Returns the string representation of vocab with `id`.
@@ -409,7 +401,7 @@ class SentencePieceProcessor {
   // than strict special control symbols.
   //
   // Consequently, encoding extra options (like "bos" / "eos") and Python
-  // wrapper flags (like add_bos=True / add_eos=True) will be IGNORED if
+  // wrapper flags (like add_bos=True / add_eos=True) will return an error if
   // the corresponding tokens are not strictly defined as CONTROL tokens.
 
   // Returns unknown (<unk>) id.
@@ -466,7 +458,7 @@ class SentencePieceProcessor {
       absl::Span<const size_t> norm_to_orig,
       const std::vector<std::pair<absl::string_view, int>>& result,
       SentencePieceText* spt, bool skip_surface = false,
-      size_t input_start_offset = 0) const;
+      size_t input_start_offset = 0, bool apply_extra_options = true) const;
 
   absl::Status ParallelEncodeInternal(absl::string_view input, size_t chunk_len,
                                       ThreadPool& thread_pool,

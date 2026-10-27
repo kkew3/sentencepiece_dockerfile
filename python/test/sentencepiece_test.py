@@ -16,7 +16,7 @@
 # limitations under the License.!
 
 from collections import defaultdict
-import glob
+import copy
 import io
 import os
 import pickle
@@ -30,9 +30,10 @@ import sentencepiece as spm
 
 try:
   from sentencepiece import sentencepiece_pb2
+  from sentencepiece import sentencepiece_model_pb2
 
   has_protobuf = True
-except ImportError:
+except Exception:
   has_protobuf = False
 
 TESTED_RETURN_TYPES = [str, int, 'serialized_proto']
@@ -44,7 +45,28 @@ print(HERE)
 
 print('VERSION={}'.format(spm.__version__))
 
-data_dir = HERE
+data_dir = (
+    HERE
+    if os.path.exists(os.path.join(HERE, 'botchan.txt'))
+    else os.path.normpath(os.path.join(HERE, '..', '..', 'data'))
+)
+
+# SentencePieceNormalizer keeps the flags of the loaded spec unless they are
+# given explicitly. These flags request raw normalization (no whitespace
+# handling), which was the implicit default before 0.3.0.
+RAW_NORMALIZER_FLAGS = dict(
+    add_dummy_prefix=False,
+    escape_whitespaces=False,
+    remove_extra_whitespaces=False,
+)
+
+
+# Pickle can only find classes defined at module level.
+class _ProcessorWithArg(spm.SentencePieceProcessor):
+
+  def __init__(self, my_arg, **kwargs):
+    super().__init__(**kwargs)
+    self.my_arg = my_arg
 
 
 class TestSentencepieceProcessor(unittest.TestCase):
@@ -876,8 +898,6 @@ class TestSentencepieceProcessor(unittest.TestCase):
 
   # SetNBestTimeout/set_nbest_timeout modify a global atomic variable in C++.
   # This makes this test thread-unsafe when run in parallel with other tests
-  # SetNBestTimeout/set_nbest_timeout modify a global atomic variable in C++.
-  # This makes this test thread-unsafe when run in parallel with other tests
   # that perform nbest encoding.
   @pytest.mark.thread_unsafe
   def test_nbest_timeout(self):
@@ -965,6 +985,16 @@ class TestSentencepieceProcessor(unittest.TestCase):
             vocab_size=1000,
             model_type='unigram',
             pretokenizer=throwing_pretokenizer,
+        )
+
+      with self.assertRaises(RuntimeError):
+        spm.SentencePieceTrainer.train(
+            input=os.path.join(HERE, 'botchan.txt'),
+            model_prefix=model_prefix,
+            vocab_size=1000,
+            model_type='unigram',
+            pretokenizer=throwing_pretokenizer,
+            allow_inconsistent_pretokenization=True,
         )
 
   def test_pretokenizer_and_delimiter_mutually_exclusive(self):
@@ -1122,6 +1152,37 @@ class TestSentencepieceProcessor(unittest.TestCase):
 
       self.assertEqual(id1, id2)
 
+  def test_pickle_keeps_options(self):
+    sp = spm.SentencePieceProcessor(
+        model_file=os.path.join(HERE, 'botchan_en_unigram_1000.model'),
+        add_bos=True,
+        add_eos=True,
+        out_type=str,
+    )
+    expected = sp.encode('hello world.')
+    self.assertEqual(pickle.loads(pickle.dumps(sp)).encode('hello world.'), expected)
+    self.assertEqual(copy.deepcopy(sp).encode('hello world.'), expected)
+
+    sub_sp = _ProcessorWithArg(
+        my_arg='custom_value',
+        model_file=os.path.join(HERE, 'botchan_en_unigram_1000.model'),
+        add_bos=True,
+        add_eos=True,
+        out_type=str,
+    )
+    cloned = pickle.loads(pickle.dumps(sub_sp))
+    self.assertIsInstance(cloned, _ProcessorWithArg)
+    self.assertEqual(cloned.encode('hello world.'), expected)
+    self.assertEqual(cloned.my_arg, 'custom_value')
+
+  def test_unpickle_model_only_state(self):
+    # Pickles from older versions store only the serialized model.
+    sp = spm.SentencePieceProcessor.__new__(spm.SentencePieceProcessor)
+    sp.__setstate__(self.sp_.serialized_model_proto())
+    self.assertEqual(
+        sp.encode('hello world.'), self.sp_.encode('hello world.', return_type=int)
+    )
+
   def test_global_params(self):
     spm.SetRandomGeneratorSeed(0)
     spm.SetMinLogLevel(2)
@@ -1172,8 +1233,10 @@ class TestSentencepieceProcessor(unittest.TestCase):
     self.assertEqual([0, 0, 0, 1], x[1][1])
 
   def test_normalizer(self):
+    # Raw normalization: disable whitespace handling explicitly.
     sp = spm.SentencePieceNormalizer(
-        model_file=os.path.join(HERE, 'botchan_en_unigram_1000.model')
+        model_file=os.path.join(HERE, 'botchan_en_unigram_1000.model'),
+        **RAW_NORMALIZER_FLAGS,
     )
 
     self.assertEqual('KADOKAWAABC', sp.normalize('ＫＡＤＯＫＡＷＡABC'))
@@ -1233,11 +1296,68 @@ class TestSentencepieceProcessor(unittest.TestCase):
     )
     self.assertEqual('hello world', sp.normalize('  hello  world  '))
 
+    # Partial override: only add_dummy_prefix is changed; the other flags
+    # keep the model's values.
+    sp = spm.SentencePieceNormalizer(
+        model_file=os.path.join(HERE, 'botchan_en_unigram_1000.model'),
+        add_dummy_prefix=False,
+    )
+    self.assertEqual('hello▁world', sp.normalize('  hello  world  '))
+
+  def test_normalizer_default_flags_follow_spec(self):
+    model_file = os.path.join(HERE, 'botchan_en_unigram_1000.model')
+
+    # Without explicit flags, the normalizer reproduces the model's
+    # normalization, i.e., the same result as SentencePieceProcessor.
+    norm = spm.SentencePieceNormalizer(model_file=model_file)
+    proc = spm.SentencePieceProcessor(model_file=model_file)
+    self.assertEqual('▁hello▁world', norm.normalize('  hello  world  '))
+    for text in ['ＫＡＤＯＫＡＷＡABC', '㍻', '  hello  world  ']:
+      self.assertEqual(proc.normalize(text), norm.normalize(text))
+      self.assertEqual(
+          proc.normalize(text, with_offsets=True),
+          norm.normalize(text, with_offsets=True),
+      )
+
+    # The loaded spec survives a round trip unchanged.
+    with open(model_file, 'rb') as f:
+      m = spm.SentencePieceNormalizer(model_proto=f.read())
+    spec = m.serialized_normalizer_spec()
+    self.assertEqual(
+        spec,
+        spm.SentencePieceNormalizer(
+            normalizer_spec=spec
+        ).serialized_normalizer_spec(),
+    )
+
+    # Explicit flags are written into the spec.
+    raw = spm.SentencePieceNormalizer(
+        normalizer_spec=spec, **RAW_NORMALIZER_FLAGS
+    )
+    self.assertNotEqual(spec, raw.serialized_normalizer_spec())
+    self.assertEqual(
+        raw.serialized_normalizer_spec(),
+        spm.SentencePieceNormalizer(
+            normalizer_spec=raw.serialized_normalizer_spec()
+        ).serialized_normalizer_spec(),
+    )
+
   def test_normalizer_rule(self):
+    # rule_name builds a new spec, so the proto defaults (true) apply.
     sp = spm.SentencePieceNormalizer(rule_name='identity')
-    self.assertEqual('ＡＢＣ', sp.Normalize('ＡＢＣ'))
+    self.assertEqual('▁ＡＢＣ', sp.Normalize('ＡＢＣ'))
 
     sp = spm.SentencePieceNormalizer(rule_name='nfkc_cf')
+    self.assertEqual('▁abc', sp.Normalize('ＡＢＣ'))
+
+    sp = spm.SentencePieceNormalizer(
+        rule_name='identity', **RAW_NORMALIZER_FLAGS
+    )
+    self.assertEqual('ＡＢＣ', sp.Normalize('ＡＢＣ'))
+
+    sp = spm.SentencePieceNormalizer(
+        rule_name='nfkc_cf', **RAW_NORMALIZER_FLAGS
+    )
     self.assertEqual('abc', sp.Normalize('ＡＢＣ'))
 
   def test_normalizer_map(self):
@@ -1246,6 +1366,9 @@ class TestSentencepieceProcessor(unittest.TestCase):
         ('apple', 'orange'),
     ]
     sp = spm.SentencePieceNormalizer(norm_map=norm_map)
+    self.assertEqual('▁bar▁orange', sp.Normalize('  foo  apple '))
+
+    sp = spm.SentencePieceNormalizer(norm_map=norm_map, **RAW_NORMALIZER_FLAGS)
     self.assertEqual('bar', sp.Normalize('foo'))
     self.assertEqual('orange', sp.Normalize('apple'))
     self.assertEqual('banana', sp.Normalize('banana'))
@@ -1316,6 +1439,20 @@ class TestSentencepieceProcessor(unittest.TestCase):
       self.assertTrue(len(pieces) > 0)
       self.assertNotEqual(pieces[0][0], '\u2581')
 
+      # A normalizer without explicit flags keeps the spec defaults and can
+      # be used for training (it used to fail because escape_whitespaces was
+      # forced to False).
+      spm.SentencePieceTrainer.Train(
+          input=os.path.join(data_dir, 'botchan.txt'),
+          model_prefix=os.path.join(tmp_dir, 'm_default'),
+          vocab_size=100,
+          normalizer=spm.SentencePieceNormalizer(norm_map=norm_map),
+      )
+      sp_norm = spm.SentencePieceNormalizer(
+          model_file=os.path.join(tmp_dir, 'm_default.model')
+      )
+      self.assertEqual('▁bar▁orange', sp_norm.Normalize('foo apple'))
+
       # Test conflict error
       with self.assertRaises(ValueError):
         spm.SentencePieceTrainer.Train(
@@ -1337,6 +1474,7 @@ class TestSentencepieceProcessor(unittest.TestCase):
     self.assertEqual(sp.encode([], return_type=int), [])
     self.assertEqual(sp.encode([], return_type=str), [])
 
+  @unittest.skipUnless(has_protobuf, 'protobuf is not installed')
   def test_offset_mapping(self):
     sp = self.sp_
 
@@ -1413,6 +1551,19 @@ class TestSentencepieceProcessor(unittest.TestCase):
     for (start, end), p in zip(res_bytes['offsets'], proto_bytes.pieces):
       self.assertEqual(byte_text[start:end], p.surface.encode('utf-8'))
 
+    # 7. add_bos, add_eos, reverse, emit_unk_piece are not supported in offset_mapping
+    for kw in (
+        {'add_bos': True},
+        {'add_eos': True},
+        {'reverse': True},
+        {'emit_unk_piece': True},
+    ):
+      with self.assertRaises(RuntimeError):
+        sp.encode(text, return_type='offset_mapping', **kw)
+      with self.assertRaises(RuntimeError):
+        sp.encode([text], return_type='offset_mapping', **kw)
+
+  @unittest.skipUnless(has_protobuf, 'protobuf is not installed')
   def test_decode_offset_mapping(self):
     sp = self.sp_
 
@@ -1464,11 +1615,34 @@ class TestSentencepieceProcessor(unittest.TestCase):
     for (start, end), p in zip(res_bytes['offsets'], proto.pieces):
       self.assertEqual(decoded_bytes[start:end], p.surface.encode('utf-8'))
 
-    # 3. Test decode pieces to offset mapping
+    # 3. Test decode pieces to offset mapping (and tuple of pieces)
     pieces_str = sp.encode(text, return_type=str)
     res_pieces = sp.decode(pieces_str, return_type='offset_mapping')
     self.assertEqual(res['offsets'], res_pieces['offsets'])
     self.assertEqual(res['pieces'], res_pieces['pieces'])
+    self.assertEqual(sp.decode(tuple(pieces_str)), decoded_text)
+    self.assertEqual(
+        sp.decode(tuple(pieces_str), return_type=bytes), decoded_bytes
+    )
+    self.assertEqual(
+        sp.decode(tuple(pieces_str), return_type='serialized_proto'),
+        sp.decode(pieces_str, return_type='serialized_proto'),
+    )
+    self.assertEqual(
+        sp.decode([tuple(pieces_str), tuple(pieces_str)]),
+        [decoded_text, decoded_text],
+    )
+    self.assertEqual(
+        sp.decode((tuple(pieces_str), tuple(pieces_str))),
+        [decoded_text, decoded_text],
+    )
+    self.assertEqual(
+        sp.decode([tuple(pieces_str)], return_type=bytes), [decoded_bytes]
+    )
+    self.assertEqual(
+        sp.decode([tuple(pieces_str)], return_type='serialized_proto'),
+        sp.decode([pieces_str], return_type='serialized_proto'),
+    )
 
     pieces_bytes = [p.encode('utf-8') for p in pieces_str]
     res_pieces_bytes = sp.decode(pieces_bytes, return_type='offset_mapping')
@@ -1572,8 +1746,6 @@ class TestSentencepieceProcessor(unittest.TestCase):
       sp.decode(ids, return_type=str, out_type=str)
 
   def test_normalizer_rule_tsv(self):
-    import tempfile
-
     with tempfile.NamedTemporaryFile(
         mode='w', delete=False, suffix='.tsv'
     ) as f:
@@ -1583,6 +1755,10 @@ class TestSentencepieceProcessor(unittest.TestCase):
 
     try:
       sp = spm.SentencePieceNormalizer(rule_tsv=tsv_path)
+      self.assertEqual('▁BBB', sp.normalize('AAA'))
+      sp = spm.SentencePieceNormalizer(
+          rule_tsv=tsv_path, **RAW_NORMALIZER_FLAGS
+      )
       self.assertEqual('BBB', sp.normalize('AAA'))
       self.assertEqual('BBB', sp.normalize('ABA'))
     finally:
@@ -1594,12 +1770,23 @@ class TestSentencepieceProcessor(unittest.TestCase):
       model_proto = f.read()
 
     sp = spm.SentencePieceNormalizer(model_proto=model_proto)
+    self.assertEqual('▁KADOKAWAABC', sp.normalize('ＫＡＤＯＫＡＷＡABC'))
+    sp = spm.SentencePieceNormalizer(
+        model_proto=model_proto, **RAW_NORMALIZER_FLAGS
+    )
     self.assertEqual('KADOKAWAABC', sp.normalize('ＫＡＤＯＫＡＷＡABC'))
 
   def test_normalizer_normalizer_spec(self):
     spec = spm.SentencePieceNormalizer(
         rule_name='nfkc_cf').serialized_normalizer_spec()
     sp = spm.SentencePieceNormalizer(normalizer_spec=spec)
+    self.assertEqual('▁abc', sp.normalize('ＡＢＣ'))
+
+    # Flags set on the source normalizer are carried by the spec.
+    raw_spec = spm.SentencePieceNormalizer(
+        rule_name='nfkc_cf', **RAW_NORMALIZER_FLAGS
+    ).serialized_normalizer_spec()
+    sp = spm.SentencePieceNormalizer(normalizer_spec=raw_spec)
     self.assertEqual('abc', sp.normalize('ＡＢＣ'))
 
   def test_encode_return_type_explicit(self):
@@ -1796,6 +1983,95 @@ class TestSentencepieceProcessor(unittest.TestCase):
       res_tuple = method((0, 1))
       self.assertIsInstance(res_tuple, list)
       self.assertEqual(len(res_tuple), 2)
+
+  def test_convert_to_flatbuffer(self):
+    unigram_path = os.path.join(data_dir, 'botchan_en_unigram_1000.model')
+    bpe_path = os.path.join(data_dir, 'botchan_en_bpe_1000.model')
+
+    with open(unigram_path, 'rb') as f:
+      unigram_serialized = f.read()
+
+    # 1. model_file -> bytes (both CamelCase and snake_case)
+    fb_from_file = spm.ConvertToFlatbuffer(model_file=unigram_path)
+    self.assertIsInstance(fb_from_file, bytes)
+    self.assertGreater(len(fb_from_file), 0)
+    self.assertEqual(
+        fb_from_file, spm.convert_to_flatbuffer(model_file=unigram_path)
+    )
+
+    # 2. serialized_model_proto -> bytes
+    fb_from_serialized = spm.convert_to_flatbuffer(
+        serialized_model_proto=unigram_serialized
+    )
+    self.assertEqual(fb_from_file, fb_from_serialized)
+
+    # 3. model_proto (bytes or ModelProto object) -> bytes
+    self.assertEqual(
+        fb_from_file, spm.convert_to_flatbuffer(model_proto=unigram_serialized)
+    )
+    if has_protobuf:
+      from sentencepiece import sentencepiece_model_pb2
+
+      mp = sentencepiece_model_pb2.ModelProto()
+      mp.ParseFromString(unigram_serialized)
+      self.assertEqual(fb_from_file, spm.convert_to_flatbuffer(model_proto=mp))
+
+    # 4. skip_char_bigrams option reduces FlatBuffer size on Unigram models
+    fb_no_bigrams = spm.convert_to_flatbuffer(
+        model_file=unigram_path, skip_char_bigrams=True
+    )
+    self.assertIsInstance(fb_no_bigrams, bytes)
+    self.assertLess(len(fb_no_bigrams), len(fb_from_file))
+
+    # 5. BPE model conversion
+    fb_bpe = spm.convert_to_flatbuffer(model_file=bpe_path)
+    self.assertIsInstance(fb_bpe, bytes)
+    self.assertGreater(len(fb_bpe), 0)
+
+    # 6. output_file writes to disk and returns None
+    with tempfile.TemporaryDirectory() as tmp_dir:
+      out_path = os.path.join(tmp_dir, 'out.spm.fb')
+      ret = spm.convert_to_flatbuffer(
+          model_file=unigram_path, output_file=out_path
+      )
+      self.assertIsNone(ret)
+      with open(out_path, 'rb') as f:
+        self.assertEqual(f.read(), fb_from_file)
+
+    # 7. allow_unsupported_model_type (WORD / CHAR)
+    if has_protobuf:
+      for model_type in (
+          sentencepiece_model_pb2.TrainerSpec.WORD,
+          sentencepiece_model_pb2.TrainerSpec.CHAR,
+      ):
+        mp = sentencepiece_model_pb2.ModelProto()
+        mp.ParseFromString(unigram_serialized)
+        mp.trainer_spec.model_type = model_type
+        with self.assertRaises(ValueError):
+          spm.convert_to_flatbuffer(model_proto=mp)
+        fb_unsupported = spm.convert_to_flatbuffer(
+            model_proto=mp, allow_unsupported_model_type=True
+        )
+        self.assertIsInstance(fb_unsupported, bytes)
+        self.assertGreater(len(fb_unsupported), 0)
+
+    # 8. Validation errors (0 or >1 inputs, invalid types, invalid data)
+    with self.assertRaises(ValueError):
+      spm.convert_to_flatbuffer()
+    with self.assertRaises(ValueError):
+      spm.convert_to_flatbuffer(
+          model_file=unigram_path, serialized_model_proto=unigram_serialized
+      )
+    with self.assertRaises(ValueError):
+      spm.convert_to_flatbuffer(model_file='')
+    with self.assertRaises(ValueError):
+      spm.convert_to_flatbuffer(model_file=unigram_path, output_file='')
+    with self.assertRaises(TypeError):
+      spm.convert_to_flatbuffer(serialized_model_proto='not_bytes')
+    with self.assertRaises(TypeError):
+      spm.convert_to_flatbuffer(model_proto=12345)
+    with self.assertRaises(ValueError):
+      spm.convert_to_flatbuffer(serialized_model_proto=b'corrupted_proto')
 
 
 def suite():

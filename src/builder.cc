@@ -58,13 +58,10 @@
 namespace sentencepiece::normalizer {
 namespace {
 
-constexpr int kMaxUnicode = 0x10FFFF;
 // Limit recursion depth to prevent stack overflow on deep or cyclic tries.
 // Must be at namespace scope (not local scope) to avoid MSVC lambda capture
 // bugs (C3493) in DecompileCharsMap.
 constexpr int kMaxDepth = 1000;
-
-constexpr absl::string_view kDefaultNormalizerName = "nfkc";
 
 #ifndef ENABLE_NFKC_COMPILE
 constexpr absl::string_view kCompileError =
@@ -364,8 +361,6 @@ absl::Status Builder::GetPrecompiledCharsMap(absl::string_view name,
     return absl::StatusBuilder(absl::StatusCode::kInvalidArgument)
            << "Invalid charsmap name " << name;
   }
-
-  std::string result;
 
 #ifndef DISABLE_EMBEDDED_DATA
   for (size_t i = 0; i < kNormalizationRules_size; ++i) {
@@ -739,15 +734,11 @@ absl::Status Builder::SaveCharsMap(absl::string_view filename,
   for (const auto& c : chars_map) {
     std::vector<std::string> src;
     std::vector<std::string> trg;
-    string_util::UnicodeText srcu;
-    string_util::UnicodeText trgu;
     for (char32_t v : c.first) {
       src.push_back(absl::StrFormat("%X", v));
-      srcu.push_back(v);
     }
     for (char32_t v : c.second) {
       trg.push_back(absl::StrFormat("%X", v));
-      trgu.push_back(v);
     }
     std::string line = absl::StrJoin(src, " ") + "\t" +
                        absl::StrJoin(trg, " ") + "\t# " +

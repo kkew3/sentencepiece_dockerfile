@@ -23,7 +23,7 @@ spm_train --normalization_rule_name=identity --input=<input> --model_prefix=<mod
 ```
 
 > [!NOTE]
-> Due to algorithm limitations, SentencePiece does not implement the *entirety* of Unicode NFKC normalization. For examples of specific character sequences that are not normalized by our implementation (such as multiple combining marks), see the comments in [builder.h](../src/builder.h#L59-L90).
+> Due to algorithm limitations, SentencePiece does not implement the *entirety* of Unicode NFKC normalization. For examples of specific character sequences that are not normalized by our implementation (such as multiple combining marks), see the comments in [builder.h](https://github.com/google/sentencepiece/blob/master/src/builder.h#L59-L90).
 
 To see the exact differences between `nmt_nfkc` and `nfkc`, you can compare their definition files:
 ```bash
@@ -53,7 +53,7 @@ To define a custom normalization rule, prepare a Tab-Separated Values (TSV) file
     *   To remove specific characters, you can leave the target sequence empty (i.e., a line with only the source sequence followed by a tab).
 *   **Ambiguity Resolution**: If multiple rules match the same input sequence, SentencePiece always selects the **longest matching rule** (leftmost-longest).
 
-For a concrete example, see [data/nfkc.tsv](../data/nfkc.tsv).
+For a concrete example, see [data/nfkc.tsv](https://github.com/google/sentencepiece/blob/master/data/nfkc.tsv).
 
 Once your TSV file is ready, pass it to the trainer using the `--normalization_rule_tsv` flag:
 
@@ -105,35 +105,32 @@ You can perform normalization directly in Python using `sentencepiece.SentencePi
 ```python
 import sentencepiece as spm
 
-# 1. Load normalizer with a pre-defined rule name
-# Note: In the Python API, whitespace-handling flags (add_dummy_prefix,
-# escape_whitespaces, remove_extra_whitespaces) default to False.
+# 1. Load normalizer with a pre-defined rule name.
+# Unless explicitly specified, whitespace-handling flags (add_dummy_prefix,
+# escape_whitespaces, remove_extra_whitespaces) follow NormalizerSpec defaults (True).
 normalizer = spm.SentencePieceNormalizer(rule_name='nmt_nfkc')
-print(normalizer.normalize('ＫＡＤＯＫＡＷＡABC'))  # Output: KADOKAWAABC
+print(normalizer.normalize('  hello   world  '))  # Output: ▁hello▁world
 
-# To enable whitespace handling (like stripping) to match NMT training defaults:
-normalizer_nmt = spm.SentencePieceNormalizer(
+# Pass False explicitly to perform raw character normalization without whitespace escaping:
+normalizer_raw = spm.SentencePieceNormalizer(
     rule_name='nmt_nfkc',
-    remove_extra_whitespaces=True,
-    add_dummy_prefix=True,
-    escape_whitespaces=True
+    add_dummy_prefix=False,
+    escape_whitespaces=False,
+    remove_extra_whitespaces=False
 )
-print(normalizer_nmt.normalize('  hello   world  '))  # Output: ▁hello▁world
+print(normalizer_raw.normalize('ＫＡＤＯＫＡＷＡABC'))  # Output: KADOKAWAABC
 
-# 2. Load normalizer from an existing model file
-# Note: The Python constructor flags default to False and will OVERRIDE
-# the settings embedded in the model file unless explicitly passed.
-normalizer_model = spm.SentencePieceNormalizer(
-    model_file='path/to/model.model',
-    remove_extra_whitespaces=True  # Explicitly pass if your model expects it
-)
+# 2. Load normalizer from an existing model file.
+# Unless explicitly overridden, whitespace-handling flags follow the settings
+# embedded inside the model file.
+normalizer_model = spm.SentencePieceNormalizer(model_file='path/to/model.model')
 
 # 3. Load normalizer directly from a custom TSV rule file
 normalizer_custom = spm.SentencePieceNormalizer(rule_tsv='path/to/custom_rules.tsv')
 
 # 4. Load normalizer directly from a Python list of mappings (norm_map)
 normalizer_map = spm.SentencePieceNormalizer(norm_map=[('foo', 'bar'), ('baz', 'qux')])
-print(normalizer_map.normalize('foobar'))  # Output: barbar
+print(normalizer_map.normalize('foobar'))  # Output: ▁barbar
 
 # 5. Decompile normalization rules from a loaded normalizer back to a list of mappings
 # (Works with normalizers loaded from model, TSV, rule name, or norm_map)
@@ -143,7 +140,11 @@ rules = normalizer.decompile()
 # 6. Train a model using a custom normalizer instance
 # You can define a normalizer at runtime and pass it directly to the trainer.
 # This embeds the custom normalization rules directly into the trained model.
-custom_norm = spm.SentencePieceNormalizer(norm_map=[('foo', 'bar')], escape_whitespaces=True)
+custom_norm = spm.SentencePieceNormalizer(
+    norm_map=[('foo', 'bar')],
+    add_dummy_prefix=False,
+    escape_whitespaces=True
+)
 spm.SentencePieceTrainer.train(
     input='input.txt',
     model_prefix='m',

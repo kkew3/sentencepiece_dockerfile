@@ -16,24 +16,39 @@
 #define UTIL_H_
 
 #include <algorithm>
+#include <cmath>
 #include <cstdint>
 #include <cstring>
-#include <memory>
 #include <random>
 #include <string>
 #include <type_traits>
+#include <utility>
 #include <vector>
 
-#include "absl/functional/any_invocable.h"
+#include "absl/container/flat_hash_map.h"
 #include "absl/random/random.h"
-#include "absl/status/status.h"
-#include "absl/strings/numbers.h"
-#include "absl/strings/str_cat.h"
 #include "absl/strings/string_view.h"
 
 static constexpr uint32_t kUnicodeError = 0xFFFD;
 
 namespace sentencepiece {
+
+template <typename K, typename V>
+std::vector<std::pair<K, V>> Sorted(const std::vector<std::pair<K, V>>& m) {
+  std::vector<std::pair<K, V>> v = m;
+  std::sort(v.begin(), v.end(),
+            [](const std::pair<K, V>& p1, const std::pair<K, V>& p2) {
+              return (p1.second > p2.second ||
+                      (p1.second == p2.second && p1.first < p2.first));
+            });
+  return v;
+}
+
+template <typename K, typename V>
+std::vector<std::pair<K, V>> Sorted(const absl::flat_hash_map<K, V>& m) {
+  std::vector<std::pair<K, V>> v(m.begin(), m.end());
+  return Sorted(v);
+}
 
 uint32_t GetRandomGeneratorSeed();
 int GetNBestTimeout();
@@ -68,6 +83,27 @@ inline std::string EncodePOD(const T& value) {
 // Return length of a single UTF-8 source character
 inline size_t OneCharLen(const char* src) {
   return "\1\1\1\1\1\1\1\1\1\1\1\1\2\2\3\4"[(*src & 0xFF) >> 4];
+}
+
+// Builds a UTF-8 byte offset -> Unicode codepoint index mapping table of size
+// `str.size() + 1`.
+inline std::vector<int> UTF8ToUnicodeOffsets(absl::string_view str) {
+  std::vector<int> utf8_to_unicode(str.size() + 1, 0);
+  size_t prev = 0;
+  int ulen = 0;
+  while (!str.empty()) {
+    const size_t mblen =
+        std::min(str.size(),
+                 static_cast<size_t>(std::max<int>(1, OneCharLen(str.data()))));
+    for (size_t i = prev; i < prev + mblen; ++i) {
+      utf8_to_unicode[i] = ulen;
+    }
+    ++ulen;
+    prev += mblen;
+    str.remove_prefix(mblen);
+  }
+  utf8_to_unicode[prev] = ulen;
+  return utf8_to_unicode;
 }
 
 // Return (x & 0xC0) == 0x80;
@@ -135,7 +171,7 @@ class ReservoirSampler {
   explicit ReservoirSampler(std::vector<T>* sampled, uint64_t size,
                             uint64_t seed)
       : sampled_(sampled), size_(size), gen_(std::seed_seq{seed}) {}
-  virtual ~ReservoirSampler() = default;
+  ~ReservoirSampler() = default;
 
   void Add(const T& item) {
     if (size_ == 0) {
@@ -173,6 +209,21 @@ std::vector<std::string> StrSplitAsCSV(absl::string_view text);
 namespace log_domain {
 
 double LogSum(const std::vector<double>& xs);
+
+template <typename T>
+inline void SanitizeDiscreteProbs(std::vector<T>* probs) {
+  bool has_positive = false;
+  for (T& p : *probs) {
+    if (std::isfinite(p) && p > T{0}) {
+      has_positive = true;
+    } else {
+      p = T{0};
+    }
+  }
+  if (!has_positive && !probs->empty()) {
+    (*probs)[0] = T{1};
+  }
+}
 
 }  // namespace log_domain
 }  // namespace sentencepiece

@@ -16,14 +16,13 @@
 #define BPE_MODEL_TRAINER_H_
 
 #include <cstdint>
-#include <limits>
 #include <memory>
 #include <queue>
 #include <string>
+#include <tuple>
 #include <utility>
 #include <vector>
 
-#include "absl/container/btree_set.h"
 #include "absl/container/flat_hash_map.h"
 #include "absl/log/check.h"
 #include "absl/status/status.h"
@@ -45,6 +44,17 @@ class Trainer : public TrainerInterface {
   absl::Status Train() override;
 
  private:
+  struct Position {
+    int sid;    // sentence id
+    int left;   // left symbol index
+    int right;  // right symbol index
+
+    bool operator<(const Position& other) const {
+      return std::tie(sid, left, right) <
+             std::tie(other.sid, other.left, other.right);
+    }
+  };
+
   // Symbol represents a character or symbol bigram.
   struct Symbol {
     const Symbol* left = nullptr;   // left symbol in bigram
@@ -59,42 +69,11 @@ class Trainer : public TrainerInterface {
     bool needs_recomputation =
         true;  // true if this symbol needs recomputation.
 
-    // Position list. Use set so that we can keep the order of occurrence.
-    // See EncodePos/DecodePos.
-    absl::btree_set<uint64_t> positions;
+    // Position list, kept in increasing order of occurrence.
+    std::vector<Position> positions;
 
-    [[nodiscard]] bool IsBigram() const {
-      return left != nullptr && right != nullptr;
-    }
     Symbol() = default;
   };
-
-  struct Position {
-    int sid;    // sentence id
-    int left;   // left symbol index
-    int right;  // right symbol index
-  };
-
-  // Encodes sid, left and right bigram index into uint64_t.
-  // Encoded value keeps the order of sid, left and right.
-  static uint64_t EncodePos(int sid, int l, int r) {
-    CHECK_GE(l, 0);
-    CHECK_GE(r, 0);
-    CHECK_LE(l, std::numeric_limits<uint16_t>::max());
-    CHECK_LE(r, std::numeric_limits<uint16_t>::max());
-    const uint64_t n = (static_cast<uint64_t>(sid) << 32) |
-                       (static_cast<uint64_t>(l) << 16) | r;
-    return n;
-  }
-
-  // Decodes sid, left and right bigram index from uint64_t.
-  static Position DecodePos(uint64_t n) {
-    Position p;
-    p.sid = n >> 32;
-    p.left = (n >> 16) & 0xffff;
-    p.right = n & 0xffff;
-    return p;
-  }
 
   // Gets unary (character) symbol from the char code |c|.
   // The return value is cached.
@@ -113,12 +92,15 @@ class Trainer : public TrainerInterface {
   int GetPrevIndex(int sid, int index) const;
 
   // Makes a new bigram from [symbols_[sid][left], symbols_[sid][right]] and
-  // Adds it to symbols_cache_ and active_symbols_.
+  // adds it to symbols_cache_ and pending_queue_.
   void AddNewPair(int sid, int left, int right);
 
   // Resets the fequency of bigram [symbols_[sid][left] symbols_[sid][right]],
   // if this bigram is not |best|.
   void ResetFreq(int sid, int left, int right, const Symbol* best);
+
+  // Initializes unary symbols_ and initial bigram symbols across sentences_.
+  void InitSymbolsAndBigrams();
 
   absl::Status AcceptSymbol(Symbol* symbol);
 

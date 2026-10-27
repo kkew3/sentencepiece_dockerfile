@@ -17,6 +17,7 @@
 # ==============================================================================
 list(APPEND SPM_LIBS
   absl::status
+  absl::statusor
   absl::status_builder
   absl::strings
   absl::flags
@@ -25,6 +26,10 @@ list(APPEND SPM_LIBS
   absl::log_initialize
   absl::check
   absl::random_random
+  absl::synchronization
+  absl::inlined_vector
+  absl::function_ref
+  absl::flat_hash_set
   absl::time
   Threads::Threads
   ${PROTOBUF_LITE_LIBRARY}
@@ -51,8 +56,6 @@ endif()
 # ==============================================================================
 if (SPM_PROTOBUF_PROVIDER STREQUAL "module")
   FetchContent_GetProperties(protobuf SOURCE_DIR protobuf_SOURCE_DIR)
-  set(PROTOBUF_LITE_SRCS "")
-  include_directories(${CMAKE_CURRENT_BINARY_DIR})
   include_directories(${protobuf_SOURCE_DIR}/src)
   include_directories(${protobuf_SOURCE_DIR}/third_party/utf8_range)
 
@@ -89,11 +92,41 @@ if (SPM_PROTOBUF_PROVIDER STREQUAL "module")
 elseif (SPM_PROTOBUF_PROVIDER STREQUAL "package")
   protobuf_generate_cpp(SPM_PROTO_SRCS SPM_PROTO_HDRS sentencepiece.proto)
   protobuf_generate_cpp(SPM_MODEL_PROTO_SRCS SPM_MODEL_PROTO_HDRS sentencepiece_model.proto)
-  set(PROTOBUF_LITE_SRCS "")
 endif()
 
+# FlatBuffers dependency and schema generation for SentencePiece Lite converter
+if (TARGET flatbuffers)
+  list(APPEND SPM_LIBS $<BUILD_INTERFACE:flatbuffers>)
+endif()
+
+add_compile_definitions(SENTENCEPIECE_LITE_USE_ABSL)
+if (TARGET utf8_validity)
+  add_compile_definitions(SENTENCEPIECE_LITE_USE_UTF8_RANGE)
+endif()
+
+set(SPM_LITE_FBS_SRC "${CMAKE_CURRENT_SOURCE_DIR}/../lite/sentencepiece_lite.fbs")
+set(SPM_LITE_FBS_GEN_HDR "${CMAKE_CURRENT_BINARY_DIR}/sentencepiece_lite_generated.h")
+if (SPM_FLATC_EXECUTABLE)
+  set(SPM_FLATC_CMD "${SPM_FLATC_EXECUTABLE}")
+  set(SPM_FLATC_DEP "")
+elseif (CMAKE_CROSSCOMPILING AND CMAKE_CROSSCOMPILING_EMULATOR)
+  set(SPM_FLATC_CMD ${CMAKE_CROSSCOMPILING_EMULATOR} $<TARGET_FILE:flatc>)
+  set(SPM_FLATC_DEP flatc)
+else()
+  set(SPM_FLATC_CMD $<TARGET_FILE:flatc>)
+  set(SPM_FLATC_DEP flatc)
+endif()
+
+add_custom_command(
+  OUTPUT "${SPM_LITE_FBS_GEN_HDR}"
+  COMMAND ${SPM_FLATC_CMD} -c --gen-object-api -o "${CMAKE_CURRENT_BINARY_DIR}" "${SPM_LITE_FBS_SRC}"
+  DEPENDS "${SPM_LITE_FBS_SRC}" ${SPM_FLATC_DEP}
+  COMMENT "Generating FlatBuffers C++ header sentencepiece_lite_generated.h for src"
+  VERBATIM
+)
+
 include_directories(${CMAKE_CURRENT_BINARY_DIR})
-include_directories(${CMAKE_CURRENT_SOURCE_DIR}/../third_party)
+include_directories(${CMAKE_CURRENT_SOURCE_DIR}/../lite)
 # darts.h is included unqualified so that the Bazel build can serve it from the
 # darts-clone module; the CMake build keeps compiling the vendored copy.
 include_directories(${CMAKE_CURRENT_SOURCE_DIR}/../third_party/darts_clone)
@@ -105,7 +138,6 @@ include_directories(${CMAKE_CURRENT_SOURCE_DIR}/../third_party/libsais)
 # 3. Source File Definitions
 # ==============================================================================
 set(SPM_SRCS
-  ${PROTOBUF_LITE_SRCS}
   ${SPM_PROTO_HDRS}
   ${SPM_PROTO_SRCS}
   ${SPM_MODEL_PROTO_HDRS}
@@ -139,6 +171,11 @@ set(SPM_SRCS
 set(SPM_TRAIN_SRCS
   ${SPM_PROTO_HDRS}
   ${SPM_MODEL_PROTO_HDRS}
+  ${SPM_LITE_FBS_GEN_HDR}
+  ../lite/sentencepiece_lite.h
+  ../lite/sentencepiece_lite.cc
+  ../lite/sentencepiece_model_converters.h
+  ../lite/sentencepiece_model_converters.cc
   builder.h
   normalization_rule.h
   unicode_script.h
@@ -150,6 +187,7 @@ set(SPM_TRAIN_SRCS
   char_model_trainer.h
   bpe_model_trainer.h
   sentencepiece_trainer.h
+  spec_parser.h
   builder.cc
   unicode_script.cc
   trainer_factory.cc
@@ -177,7 +215,6 @@ set(SPM_TEST_SRCS
   sentencepiece_processor_test.cc
   sentencepiece_processor_parallel_test.cc
   sentencepiece_trainer_test.cc
-  test_main.cc
   trainer_factory_test.cc
   trainer_interface_test.cc
   unicode_script_test.cc
@@ -206,24 +243,17 @@ target_link_libraries(sentencepiece-static PRIVATE ${SPM_LIBS})
 target_link_libraries(sentencepiece_train-static PRIVATE sentencepiece-static ${SPM_LIBS})
 add_dependencies(sentencepiece_train-static sentencepiece-static)
 
-target_include_directories(sentencepiece-static PUBLIC
+set(SPM_TARGET_INCLUDE_DIRS
   $<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}>
   $<BUILD_INTERFACE:${PROJECT_BINARY_DIR}>
   $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}>
   $<BUILD_INTERFACE:${CMAKE_CURRENT_BINARY_DIR}>
-  $<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/third_party>
   $<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/third_party/darts_clone>
   $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>
 )
-target_include_directories(sentencepiece_train-static PUBLIC
-  $<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}>
-  $<BUILD_INTERFACE:${PROJECT_BINARY_DIR}>
-  $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}>
-  $<BUILD_INTERFACE:${CMAKE_CURRENT_BINARY_DIR}>
-  $<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/third_party>
-  $<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/third_party/darts_clone>
-  $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>
-)
+
+target_include_directories(sentencepiece-static PUBLIC ${SPM_TARGET_INCLUDE_DIRS})
+target_include_directories(sentencepiece_train-static PUBLIC ${SPM_TARGET_INCLUDE_DIRS})
 
 set(SPM_CXX_STANDARD_FEATURE cxx_std_20)
 
@@ -236,24 +266,8 @@ if (SPM_ENABLE_SHARED)
   target_link_libraries(sentencepiece PRIVATE ${SPM_LIBS})
   target_link_libraries(sentencepiece_train PRIVATE ${SPM_LIBS} sentencepiece)
   add_dependencies(sentencepiece_train sentencepiece)
-  target_include_directories(sentencepiece PUBLIC
-    $<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}>
-    $<BUILD_INTERFACE:${PROJECT_BINARY_DIR}>
-    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}>
-    $<BUILD_INTERFACE:${CMAKE_CURRENT_BINARY_DIR}>
-    $<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/third_party>
-    $<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/third_party/darts_clone>
-    $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>
-  )
-  target_include_directories(sentencepiece_train PUBLIC
-    $<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}>
-    $<BUILD_INTERFACE:${PROJECT_BINARY_DIR}>
-    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}>
-    $<BUILD_INTERFACE:${CMAKE_CURRENT_BINARY_DIR}>
-    $<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/third_party>
-    $<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/third_party/darts_clone>
-    $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>
-  )
+  target_include_directories(sentencepiece PUBLIC ${SPM_TARGET_INCLUDE_DIRS})
+  target_include_directories(sentencepiece_train PUBLIC ${SPM_TARGET_INCLUDE_DIRS})
   add_library(sentencepiece::sentencepiece ALIAS sentencepiece)
   add_library(sentencepiece::sentencepiece_train ALIAS sentencepiece_train)
   add_library(sentencepiece::sentencepiece-static ALIAS sentencepiece-static)
@@ -308,7 +322,7 @@ target_link_libraries(spm_decode sentencepiece ${SPM_LIBS})
 target_link_libraries(spm_normalize sentencepiece sentencepiece_train ${SPM_LIBS})
 target_link_libraries(spm_train sentencepiece sentencepiece_train ${SPM_LIBS})
 target_link_libraries(spm_export_vocab sentencepiece ${SPM_LIBS})
-target_link_libraries(spm_eval sentencepiece sentencepiece_train ${SPM_LIBS})
+target_link_libraries(spm_eval sentencepiece ${SPM_LIBS})
 
 if (SPM_ENABLE_NFKC_COMPILE)
   add_executable(compile_charsmap compile_charsmap_main.cc)
@@ -397,39 +411,16 @@ if (SPM_LIB_TARGETS)
 endif()
 
 # ==============================================================================
-# 7. Header Generation & Installation
+# 7. Header Installation
 # ==============================================================================
-set(GENERATED_HEADERS_DIR "${CMAKE_CURRENT_BINARY_DIR}/installed_headers")
-set(MODIFIER_SCRIPT "${CMAKE_CURRENT_SOURCE_DIR}/../cmake/modify_headers.cmake")
-
-add_custom_command(
-  OUTPUT "${GENERATED_HEADERS_DIR}/sentencepiece_processor.h"
-  DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/sentencepiece_processor.h" "${MODIFIER_SCRIPT}"
-  COMMAND ${CMAKE_COMMAND} -DINPUT_FILE="${CMAKE_CURRENT_SOURCE_DIR}/sentencepiece_processor.h"
-                           -DOUTPUT_FILE="${GENERATED_HEADERS_DIR}/sentencepiece_processor.h"
-                           -P "${MODIFIER_SCRIPT}"
-  COMMENT "Generating modified sentencepiece_processor.h for installation"
+install(
+  FILES
+    sentencepiece_trainer.h
+    sentencepiece_processor.h
+    ${SPM_PROTO_HDRS}
+    ${SPM_MODEL_PROTO_HDRS}
+  DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}
 )
-
-add_custom_command(
-  OUTPUT "${GENERATED_HEADERS_DIR}/sentencepiece_trainer.h"
-  DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/sentencepiece_trainer.h" "${MODIFIER_SCRIPT}"
-  COMMAND ${CMAKE_COMMAND} -DINPUT_FILE="${CMAKE_CURRENT_SOURCE_DIR}/sentencepiece_trainer.h"
-                           -DOUTPUT_FILE="${GENERATED_HEADERS_DIR}/sentencepiece_trainer.h"
-                           -P "${MODIFIER_SCRIPT}"
-  COMMENT "Generating modified sentencepiece_trainer.h for installation"
-)
-
-add_custom_target(generate_installed_headers ALL
-  DEPENDS "${GENERATED_HEADERS_DIR}/sentencepiece_processor.h"
-          "${GENERATED_HEADERS_DIR}/sentencepiece_trainer.h"
-)
-
-install(FILES "${GENERATED_HEADERS_DIR}/sentencepiece_trainer.h" "${GENERATED_HEADERS_DIR}/sentencepiece_processor.h"
-  DESTINATION ${CMAKE_INSTALL_INCLUDEDIR})
-if (NOT SPM_PROTOBUF_PROVIDER STREQUAL "internal")
-  install(FILES ${SPM_PROTO_HDRS} ${SPM_MODEL_PROTO_HDRS} DESTINATION ${CMAKE_INSTALL_INCLUDEDIR})
-endif()
 
 # ==============================================================================
 # 8. Testing & Benchmarks
@@ -455,10 +446,11 @@ if (SPM_ENABLE_BENCHMARK)
         sentencepiece sentencepiece_train ${SPM_LIBS} benchmark::benchmark gtest)
 endif()
 
-if (CMAKE_SYSTEM_NAME STREQUAL "iOS")
+if (CMAKE_SYSTEM_NAME STREQUAL "iOS" AND COMMAND set_xcode_property)
   set_xcode_property(spm_encode PRODUCT_BUNDLE_IDENTIFIER "SentencePiece" All)
   set_xcode_property(spm_decode PRODUCT_BUNDLE_IDENTIFIER "SentencePiece" All)
   set_xcode_property(spm_normalize PRODUCT_BUNDLE_IDENTIFIER "SentencePiece" All)
   set_xcode_property(spm_train PRODUCT_BUNDLE_IDENTIFIER "SentencePiece" All)
   set_xcode_property(spm_export_vocab PRODUCT_BUNDLE_IDENTIFIER "SentencePiece" All)
+  set_xcode_property(spm_eval PRODUCT_BUNDLE_IDENTIFIER "SentencePiece" All)
 endif()

@@ -16,7 +16,6 @@
 
 #include <algorithm>
 #include <bit>
-#include <cassert>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
@@ -27,7 +26,6 @@
 #include <vector>
 
 #include "absl/container/flat_hash_set.h"
-#include "absl/numeric/bits.h"
 #include "absl/status/status.h"
 #include "absl/status/statusor.h"
 #include "absl/strings/str_cat.h"
@@ -40,11 +38,11 @@
 namespace sentencepiece::lite {
 namespace {
 
-bool IsInvisiblePiece(const ::sentencepiece::ModelProto::SentencePiece& sp) {
-  return sp.type() == ::sentencepiece::ModelProto::SentencePiece::UNKNOWN ||
-         sp.type() == ::sentencepiece::ModelProto::SentencePiece::CONTROL ||
-         sp.type() == ::sentencepiece::ModelProto::SentencePiece::UNUSED ||
-         sp.type() == ::sentencepiece::ModelProto::SentencePiece::BYTE;
+bool IsInvisiblePiece(::sentencepiece::lite::PieceType type) {
+  return type == ::sentencepiece::lite::PieceType_UNKNOWN ||
+         type == ::sentencepiece::lite::PieceType_CONTROL ||
+         type == ::sentencepiece::lite::PieceType_UNUSED ||
+         type == ::sentencepiece::lite::PieceType_BYTE;
 }
 
 absl::StatusOr<std::vector<uint8_t>> BuildDoubleArrayBlob(
@@ -225,8 +223,13 @@ absl::StatusOr<std::string> ToFlatbuffer(
   if (proto.has_trainer_spec()) {
     const auto& ts = proto.trainer_spec();
     auto model_type = ts.model_type();
-    if (model_type != ::sentencepiece::TrainerSpec::UNIGRAM &&
-        model_type != ::sentencepiece::TrainerSpec::BPE) {
+    const bool is_supported_type =
+        (model_type == ::sentencepiece::TrainerSpec::UNIGRAM ||
+         model_type == ::sentencepiece::TrainerSpec::BPE) ||
+        (options.allow_unsupported_model_type &&
+         (model_type == ::sentencepiece::TrainerSpec::WORD ||
+          model_type == ::sentencepiece::TrainerSpec::CHAR));
+    if (!is_supported_type) {
       return absl::InvalidArgumentError(absl::StrCat(
           "Unsupported model type: ",
           ::sentencepiece::TrainerSpec::ModelType_Name(model_type)));
@@ -265,8 +268,6 @@ absl::StatusOr<std::string> ToFlatbuffer(
   }
   fbs.types.reserve(proto.pieces_size());
 
-  std::vector<std::string> sanitized_pieces;
-  sanitized_pieces.reserve(proto.pieces_size());
   std::vector<std::pair<std::string_view, int>> pieces_to_sort;
   pieces_to_sort.reserve(proto.pieces_size());
   std::vector<std::pair<std::string_view, int>> user_defined_pieces;
@@ -286,16 +287,18 @@ absl::StatusOr<std::string> ToFlatbuffer(
           "Piece at index ", i, " is invalid (empty or too long)."));
     }
     if (piece_view.find('\0') != std::string_view::npos) {  // NOLINT
-      if (options.treat_null_byte_as_unused && byte_fallback_enabled) {
-        sanitized_pieces.push_back(absl::StrCat("<unused_", i, ">"));
-        piece_view = sanitized_pieces.back();
+      if (options.treat_null_byte_as_unused && byte_fallback_enabled &&
+          piece_view.size() == 1) {
+        fbs.pieces.push_back(absl::StrCat("<unused_", i, ">"));
         piece_type = ::sentencepiece::ModelProto::SentencePiece::UNUSED;
       } else {
         return absl::InvalidArgumentError(absl::StrCat(
             "Piece at index ", i, " is invalid (contains null byte)."));
       }
+    } else {
+      fbs.pieces.emplace_back(piece_view);
     }
-    fbs.pieces.emplace_back(piece_view);
+    piece_view = fbs.pieces.back();
     pieces_to_sort.emplace_back(piece_view, i);
     if (piece_type ==
         ::sentencepiece::ModelProto::SentencePiece::USER_DEFINED) {
@@ -377,7 +380,7 @@ absl::StatusOr<std::string> ToFlatbuffer(
     absl::flat_hash_set<std::string_view> bigrams_set;
     bigrams_set.reserve(proto.pieces_size());
     for (int i = 0; i < proto.pieces_size(); ++i) {
-      std::string_view piece = proto.pieces(i).piece();
+      std::string_view piece = fbs.pieces[i];
       size_t prev_len = 0;
       size_t curr_offset = 0;
       while (curr_offset < piece.size()) {
@@ -434,15 +437,14 @@ absl::StatusOr<std::string> ToFlatbuffer(
     ids.reserve(16);
     constexpr size_t kMaxDirectMappingPieceLength = 128;
     for (int i = 0; i < proto.pieces_size(); ++i) {
-      const auto& sp = proto.pieces(i);
       // Invisible pieces (control, unk, unused, byte) are filtered out at
       // runtime by IsInvisible() anyway. We mark them as 1 so that BPE models
       // containing only safe normal tokens can serialize their vector as null.
-      if (IsInvisiblePiece(sp)) {
+      if (IsInvisiblePiece(fbs.types[i])) {
         direct_mappings[i] = 1;
         continue;
       }
-      const std::string_view piece = sp.piece();
+      const std::string_view piece = fbs.pieces[i];
       if (piece.size() > kMaxDirectMappingPieceLength) {
         all_are_direct_mappings = false;
         continue;

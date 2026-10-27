@@ -17,7 +17,6 @@
 #include <algorithm>
 #include <cfloat>
 #include <cmath>
-#include <map>
 #include <memory>
 #include <queue>
 #include <string>
@@ -43,7 +42,6 @@ namespace {
 constexpr size_t kPreallocateLatticeNodeSize = 1024;
 
 constexpr float kUnkPenalty = 10.0;
-constexpr float kEpsilon = 1e-7;
 
 // Returns log(exp(x) + exp(y)).
 // if init_mode is true, returns log(exp(y)) == y.
@@ -84,7 +82,7 @@ inline float Gumbel() {
   const float kEpsilon = 1e-7;
   auto* mt = random::GetRandomGenerator();
   float noise =
-      -std::log(-(std::log(absl::Uniform(*mt, 0.0f, 1.0f) + kEpsilon)));
+      -std::log(-(std::log(absl::Uniform(*mt, kEpsilon, 1.0f - kEpsilon))));
 
   return noise;
 }
@@ -166,6 +164,12 @@ void Lattice::SetSentence(absl::string_view sentence) {
 }
 
 Lattice::Node* Lattice::Insert(int pos, int length) {
+  const int len = size();
+  if (pos < 0 || length <= 0 || pos + length > len) {
+    LOG(ERROR) << "Invalid node position or length: pos=" << pos
+               << " length=" << length << " size=" << len;
+    return nullptr;
+  }
   Node* node = NewNode();
   node->pos = pos;
   node->length = length;
@@ -180,6 +184,7 @@ Lattice::Node* Lattice::Insert(int pos, int length) {
 
 Lattice::LatticePathWithScore Lattice::Viterbi() {
   const size_t len = size();
+  if (len == 0) return {};
 
   for (size_t pos = 0; pos <= len; ++pos) {
     for (Node* rnode : begin_nodes_[pos]) {
@@ -204,10 +209,18 @@ Lattice::LatticePathWithScore Lattice::Viterbi() {
 
   // backtrace
   std::vector<Node*> results;
-  float score = begin_nodes(len)[0]->backtrace_score;
-  for (Node* node = begin_nodes_[len][0]->prev; node->prev != nullptr;
-       node = node->prev) {
+  if (begin_nodes_[len].empty() || begin_nodes_[len][0] == nullptr) {
+    LOG(ERROR) << "EOS node is missing in Viterbi.";
+    return {};
+  }
+  float score = begin_nodes_[len][0]->backtrace_score;
+  for (Node* node = begin_nodes_[len][0]->prev;
+       node != nullptr && node->prev != nullptr; node = node->prev) {
     results.push_back(node);
+    if (results.size() > len) {
+      LOG(ERROR) << "Detected cycle or infinite loop in Viterbi backtrace.";
+      return {};
+    }
   }
 
   std::reverse(results.begin(), results.end());
@@ -235,7 +248,7 @@ std::vector<float> Lattice::ForwardAlgorithm(float inv_theta) const {
   return alpha;
 }
 
-std::vector<float> Lattice::BackwardAlgorithm(float inv_theta) const {
+std::vector<float> Lattice::BackwardAlgorithm() const {
   const size_t len = size();
   std::vector<float> beta(node_allocator_.size(), 0.0);
 
@@ -262,7 +275,7 @@ float Lattice::PopulateMarginal(float freq,
   // the index of alpha/beta is Node::node_id.
 
   const auto alpha = ForwardAlgorithm(1.0);
-  const auto beta = BackwardAlgorithm(1.0);
+  const auto beta = BackwardAlgorithm();
 
   const float Z = alpha[begin_nodes_[len][0]->node_id];
   for (size_t pos = 0; pos < len; ++pos) {
@@ -340,6 +353,9 @@ std::vector<Lattice::LatticePathWithScore> Lattice::NBest(size_t nbest_size,
     return {};
   }
 
+  const size_t len = size();
+  if (len == 0) return {};
+
   if (nbest_size == 1 && !sample) {
     return {Viterbi()};
   }
@@ -379,7 +395,7 @@ std::vector<Lattice::LatticePathWithScore> Lattice::NBest(size_t nbest_size,
   eos->next = nullptr;
   eos->gx = 0.0;
 
-  std::vector<float> alpha(node_allocator_.size(), 0.0);
+  std::vector<float> alpha;
 
   if (sample) {
     // Run forwards algorithm to get normalising constants
@@ -393,9 +409,27 @@ std::vector<Lattice::LatticePathWithScore> Lattice::NBest(size_t nbest_size,
   }
   agenda.push(eos);
 
-  int shrink_count = 0;  // Number of times agenda has shrunk. For logging only.
-  bool printed_memory_warning = false;  // For logging only.
+  constexpr size_t kMaxAgendaSize = 10000;
+  constexpr size_t kMinAgendaSize = 512;
+  constexpr size_t kMaxHypothesisSize = 100000;
+  constexpr size_t kMaxAllocatorSize = 500000;
+  constexpr int kMaxShrinkCount = 10;
+  const size_t min_agenda_size =
+      std::min<size_t>(kMinAgendaSize, nbest_size * 10);
+  size_t max_hypothesis_size = kMaxHypothesisSize;
+  size_t total_hypotheses = 1;  // Includes EOS hypothesis.
+  int shrink_count = 0;         // Number of times agenda has shrunk.
+  size_t step_count = 0;
   while (!agenda.empty()) {
+    if (timeout_ms > 0 && (++step_count & 0xFFF) == 0) {
+      const auto elapsed = absl::ToInt64Milliseconds(absl::Now() - start_time);
+      if (elapsed >= timeout_ms) {
+        LOG(WARNING) << "NBest search timed out after " << elapsed << " ms. "
+                     << "Falling back to Viterbi best path.";
+        return {Viterbi()};
+      }
+    }
+
     auto* top = agenda.top();
     agenda.pop();
     auto* node = top->node;
@@ -403,8 +437,13 @@ std::vector<Lattice::LatticePathWithScore> Lattice::NBest(size_t nbest_size,
     // Reaches to BOS
     if (node == bos_node()) {
       results.resize(results.size() + 1);
-      for (auto* n = top->next; n->next != nullptr; n = n->next) {
+      for (auto* n = top->next; n != nullptr && n->next != nullptr;
+           n = n->next) {
         results.back().first.push_back(n->node);
+        if (results.back().first.size() > len) {
+          LOG(ERROR) << "Detected cycle in NBest path.";
+          break;
+        }
       }
       results.back().second = top->fx;
       if (results.size() == nbest_size) {
@@ -414,14 +453,16 @@ std::vector<Lattice::LatticePathWithScore> Lattice::NBest(size_t nbest_size,
     }
 
     const size_t end_nodes_size = end_nodes(node->pos).size();
-    std::vector<float> probs(end_nodes_size, 0.0);
-    std::vector<float> perturbed_probs(end_nodes_size, 0.0);
-    std::vector<double> adjusted_probs(end_nodes_size, 0.0);
-    const float Z = alpha[node->node_id];
+    std::vector<float> probs;
+    std::vector<double> adjusted_probs;
     if (sample) {
+      probs.resize(end_nodes_size, 0.0);
+      std::vector<float> perturbed_probs(end_nodes_size, 0.0);
+      adjusted_probs.resize(end_nodes_size, 0.0);
+      const float Z = alpha[node->node_id];
       float max_score = -1e8;
       // Calculate the marginal and perturbed scores for stochastic search
-      for (size_t i = 0; i < end_nodes(node->pos).size(); i++) {
+      for (size_t i = 0; i < end_nodes_size; i++) {
         Node* lnode = end_nodes(node->pos)[i];
         // Calculate backwards transition score
         probs[i] =
@@ -443,7 +484,7 @@ std::vector<Lattice::LatticePathWithScore> Lattice::NBest(size_t nbest_size,
     }
 
     // Expands new node ending at node->pos
-    for (size_t i = 0; i < end_nodes(node->pos).size(); i++) {
+    for (size_t i = 0; i < end_nodes_size; i++) {
       Node* lnode = end_nodes(node->pos)[i];
       auto* hyp = hypothesis_allocator.Allocate();
       hyp->node = lnode;
@@ -459,21 +500,21 @@ std::vector<Lattice::LatticePathWithScore> Lattice::NBest(size_t nbest_size,
       agenda.push(hyp);
     }
 
-    static constexpr int kOneBillion = 1000000000;  // 10^9.
-    if (hypothesis_allocator.size() >= kOneBillion) {
-      if (!printed_memory_warning) {
-        printed_memory_warning = true;
-        LOG(WARNING) << "Allocator size exceeds " << kOneBillion
-                     << " with an example of length " << this->size();
-      }
+    total_hypotheses += end_nodes_size;
+    if (total_hypotheses >= kMaxAllocatorSize ||
+        hypothesis_allocator.size() >= kMaxAllocatorSize) {
+      LOG(WARNING) << "Allocator size exceeds " << kMaxAllocatorSize
+                   << " with an example of length " << this->size()
+                   << ". Falling back to Viterbi best path.";
+      return {Viterbi()};
     }
 
     // When the input is too long or contains duplicated phrases,
-    // `agenda` will get extremely big. Here we avoid this case by
-    // dynamically shrinking the agenda.
-    constexpr int kMaxAgendaSize = 10000;
-    constexpr int kMinAgendaSize = 512;
-    if (agenda.size() >= kMaxAgendaSize) {
+    // `agenda` or `hypothesis_allocator` will get extremely big. Here we avoid
+    // this case by dynamically shrinking the agenda.
+    if (agenda.size() >= kMaxAgendaSize ||
+        (agenda.size() > min_agenda_size &&
+         hypothesis_allocator.size() >= max_hypothesis_size)) {
       if (timeout_ms > 0) {
         const auto elapsed =
             absl::ToInt64Milliseconds(absl::Now() - start_time);
@@ -483,17 +524,24 @@ std::vector<Lattice::LatticePathWithScore> Lattice::NBest(size_t nbest_size,
           return {Viterbi()};
         }
       }
-      // Keeps the top `kMinAgendaSize` hypothesis.
+      if (shrink_count >= kMaxShrinkCount) {
+        LOG(WARNING) << "NBest search exceeded max shrink count "
+                     << kMaxShrinkCount
+                     << ". Falling back to Viterbi best path.";
+        return {Viterbi()};
+      }
+      // Keeps the top `min_agenda_size` hypotheses.
       Agenda new_agenda;
       // Keeps the top hypothesis and the ones on their "next" paths.
       model::FreeList<Hypothesis> new_allocator(kPreallocatedHypothesisSize);
       // Map between old Hypothesis* and new Hypothesis*.
       absl::flat_hash_map<const Hypothesis*, Hypothesis*> clone_map;
 
-      const size_t size = std::min<size_t>(kMinAgendaSize, nbest_size * 10);
+      const size_t size = std::min<size_t>(agenda.size(), min_agenda_size);
       shrink_count++;
       LOG(WARNING) << "Too big agenda size " << agenda.size()
-                   << ". Shrinking (round " << shrink_count << ") down to "
+                   << " (allocator size " << hypothesis_allocator.size()
+                   << "). Shrinking (round " << shrink_count << ") down to "
                    << size << ".";
       for (size_t i = 0; i < size; ++i) {
         const Hypothesis* top_hyp = agenda.top();
@@ -504,6 +552,7 @@ std::vector<Lattice::LatticePathWithScore> Lattice::NBest(size_t nbest_size,
       }
       agenda = std::move(new_agenda);
       hypothesis_allocator = std::move(new_allocator);
+      max_hypothesis_size = hypothesis_allocator.size() + kMaxHypothesisSize;
     }
   }
 
@@ -514,9 +563,7 @@ std::vector<Lattice::Node*> Lattice::Sample(float inv_theta) {
   const size_t len = size();
   if (len == 0) return {};
 
-  std::vector<float> alpha(node_allocator_.size(), 0.0);
-
-  alpha = ForwardAlgorithm(inv_theta);
+  const std::vector<float> alpha = ForwardAlgorithm(inv_theta);
 
   auto* mt = random::GetRandomGenerator();
 
@@ -526,17 +573,23 @@ std::vector<Lattice::Node*> Lattice::Sample(float inv_theta) {
   float Z = alpha[eos_node()->node_id];
   Node* node = eos_node();
   while (true) {
+    if (end_nodes_[node->pos].empty()) break;
     probs.clear();
     for (const Node* lnode : end_nodes_[node->pos]) {
       probs.push_back(std::exp(static_cast<double>(
           alpha[lnode->node_id] + inv_theta * lnode->score - Z)));
     }
+    log_domain::SanitizeDiscreteProbs(&probs);
     std::discrete_distribution<int> dist(probs.begin(), probs.end());
     node = end_nodes_[node->pos][dist(*mt)];
     if (node == bos_node()) break;
 
     Z = alpha[node->node_id];
     results.push_back(node);
+    if (results.size() > len) {
+      LOG(ERROR) << "Detected cycle or infinite loop in Sample.";
+      break;
+    }
   }
 
   std::reverse(results.begin(), results.end());
@@ -581,7 +634,9 @@ void Model::PopulateNodes(Lattice* lattice) const {
           get_chars_length(begin_pos, begin + trie_results[k].length);
       const int id = trie_results[k].value;
       if (IsUnusedInlined(id)) continue;
+      if (length <= 0) continue;
       Lattice::Node* node = lattice->Insert(begin_pos, length);
+      if (!node) continue;
       node->id = id;  // the value of Trie stores vocab_id.
       // User defined symbol receives extra bonus to always be selected.
       node->score = IsUserDefinedInlined(id) ? GetUserDefinedScore(length)
@@ -593,8 +648,10 @@ void Model::PopulateNodes(Lattice* lattice) const {
 
     if (!has_single_node) {
       Lattice::Node* node = lattice->Insert(begin_pos, 1);
-      node->id = unk_id_;  // add UNK node.
-      node->score = unk_score;
+      if (node) {
+        node->id = unk_id_;  // add UNK node.
+        node->score = unk_score;
+      }
     }
   }
 }

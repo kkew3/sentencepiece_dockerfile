@@ -47,8 +47,8 @@ sp = spm.SentencePieceProcessor(model_file='m.model')
 
 # 3. Encode raw text into subword pieces (strings) or vocabulary IDs (integers).
 text = "I saw a girl with a telescope."
-pieces = sp.encode(text, out_type=str)
-ids = sp.encode(text, out_type=int)
+pieces = sp.encode(text, return_type=str)
+ids = sp.encode(text, return_type=int)
 
 print(f"Pieces: {pieces}")
 # Output: ['▁I', '▁saw', '▁a', '▁girl', '▁with', '▁a', '▁', 'te', 'le', 's', 'c', 'o', 'pe', '.']
@@ -87,7 +87,7 @@ To improve the robustness and accuracy of translation and language models, Sente
 ```python
 # Sample different segmentations on-the-fly
 for _ in range(3):
-    print(sp.encode('New York', out_type=str, enable_sampling=True, alpha=0.1, nbest_size=-1))
+    print(sp.encode('New York', return_type=str, enable_sampling=True, alpha=0.1, nbest_size=-1))
 # May output:
 # ['▁', 'N', 'e', 'w', '▁York']
 # ['▁New', '▁York']
@@ -149,7 +149,8 @@ For details, benchmarks, and C++ integration recipes, see the [SentencePiece Lit
 For detailed guides, API references, and advanced usage, please refer to the following resources:
 
 *   [SentencePiece Lite Runtime Guide](lite/README.md)
-*   [Command Line Interface (CLI) & Build Guide (CMake)](doc/cli.md)
+*   [Command Line Interface (CLI) Guide](doc/cli.md)
+*   [Building with CMake](doc/cmake.md)
 *   [Building with Bazel](doc/bazel.md)
 *   [C++ API Reference](doc/cpp.md)
 *   [Python API Reference](python/README.md) & [Python Module Directory](python/)
@@ -158,6 +159,7 @@ For detailed guides, API references, and advanced usage, please refer to the fol
 *   [Performance Benchmark Code & Reproduction Guide](benchmark/README.md)
 *   [Training Options Reference](doc/options.md)
 *   [Auto-Character Coverage & Byte-Fallback Guide](doc/auto_character_coverage.md)
+*   [Sparse L1 Unigram Pruning Guide](doc/sparse_l1_unigram.md)
 *   [Text Normalization & Custom Rules](doc/normalization.md)
 *   [Special Symbols & Control Tokens](doc/special_symbols.md)
 *   [Vocabulary Piece Constraints](doc/piece_constraints.md)

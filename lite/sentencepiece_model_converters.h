@@ -44,6 +44,14 @@ struct ConverterOptions {
   // conversion will fail with an error because null bytes cannot be safely
   // delegated to byte tokens (<0x00>).
   bool treat_null_byte_as_unused = false;
+
+  // WORD and CHAR models are not natively supported in FlatBuffers (.spm.fb)
+  // and cause conversion to fail with an InvalidArgument error by default.
+  // If true, allows converting models with unsupported model types (such as
+  // WORD and CHAR) without error; however, even when enabled, these models
+  // fall back to and operate as UNIGRAM at runtime in
+  // SentencePieceLiteProcessor.
+  bool allow_unsupported_model_type = false;
 };
 
 // Converts a standard SentencePiece ModelProto into a serialized FlatBuffers
@@ -52,14 +60,14 @@ struct ConverterOptions {
 // Performance note:
 // 1. Initialization / Load Time:
 //    On-the-fly conversion is fast enough for production initialization and is
-//    equivalent in speed (or even faster when skip_char_bigrams = true) to
-//    standard OSS SentencePieceProcessor::LoadFromSerializedProto(proto) for
-//    Unigram models. For BPE models, conversion includes precomputing direct
-//    mapping shortcuts across all pieces.
+//    significantly faster than standard OSS
+//    SentencePieceProcessor::LoadFromSerializedProto(proto) for Unigram models.
+//    For BPE models, conversion includes precomputing direct mapping shortcuts
+//    across all pieces.
 //    - For large 256k Unigram models (e.g., ulm_spm.256k):
-//      OSS Load: ~647 ms vs Lite Fast Init: ~624 ms (faster than OSS!).
+//      OSS Load: ~647 ms vs Lite Fast Init: ~136 ms (~4.8x faster than OSS!).
 //    - For large 262k BPE models (e.g., Gemma 3 262k):
-//      OSS Load: ~211 ms vs Lite Fast Init: ~1,606 ms (includes shortcut
+//      OSS Load: ~211 ms vs Lite Fast Init: ~334 ms (includes shortcut
 //      precomp).
 //
 // 2. Memory / Heap Consumption:
@@ -126,7 +134,7 @@ inline void SwapPrecompiledCharsmapEndian(ByteContainer* charsmap,
       (std::endian::native == std::endian::big) == from_little_endian;
   const uint32_t trie_blob_size =
       need_swap_size ? absl::byteswap(words[0]) : words[0];
-  if (sizeof(uint32_t) + trie_blob_size <= charsmap->size() &&
+  if (trie_blob_size <= charsmap->size() - sizeof(uint32_t) &&
       (trie_blob_size % sizeof(uint32_t)) == 0) {
     const size_t num_words = 1 + (trie_blob_size / sizeof(uint32_t));
     for (size_t i = 0; i < num_words; ++i) {

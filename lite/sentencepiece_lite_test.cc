@@ -14,7 +14,6 @@
 
 #include "sentencepiece_lite.h"
 
-#include <gmock/gmock.h>
 #include <gtest/gtest.h>
 
 #include <algorithm>
@@ -53,8 +52,6 @@ std::string GetFilePath(std::string_view path) {
       "../../test_data/",
       "lite/test_data/",
       "../lite/test_data/",
-      "test_data/",
-      "../test_data/",
   };
   for (const auto prefix : kPrefixes) {
     const std::string candidate = std::string(prefix) + std::string(path);
@@ -152,8 +149,10 @@ TEST_P(SentencePieceLiteTest, EncodeDecodeIdempotency) {
     ASSERT_EQ(lite_processor_->Decode(lite_ids, &lite_decoded),
               StatusCode::kOk);
 
-    const bool byte_fallback = (lite_processor_->PieceToId("<0x00>") != -1);
-    const int unk_id = lite_processor_->PieceToId("<unk>");
+    const bool byte_fallback =
+        (lite_processor_->piece_type(lite_processor_->PieceToId("<0x00>")) ==
+         static_cast<int>(PieceType_BYTE));
+    const int unk_id = lite_processor_->unk_id();
     if (!byte_fallback &&
         std::find(lite_ids.begin(), lite_ids.end(), unk_id) != lite_ids.end()) {
       continue;
@@ -415,10 +414,13 @@ TEST_P(SentencePieceLiteTest, VocabSizeAndPieceType) {
   EXPECT_EQ(lite_processor_->piece_type(static_cast<int>(vocab_size)), -1);
   EXPECT_EQ(lite_processor_->IdToPiece(-1), "<unk>");
   EXPECT_EQ(lite_processor_->IdToPiece(static_cast<int>(vocab_size)), "<unk>");
-  EXPECT_EQ(lite_processor_->PieceToId("NON_EXISTING_PIECE"), -1);
-  EXPECT_EQ(lite_processor_->PieceToId(""), -1);
-  EXPECT_EQ(lite_processor_->PieceToId(std::string_view("a", 0)), -1);
-  EXPECT_EQ(lite_processor_->PieceToId(std::string_view()), -1);
+  EXPECT_EQ(lite_processor_->PieceToId("NON_EXISTING_PIECE"),
+            lite_processor_->unk_id());
+  EXPECT_EQ(lite_processor_->PieceToId(""), lite_processor_->unk_id());
+  EXPECT_EQ(lite_processor_->PieceToId(std::string_view("a", 0)),
+            lite_processor_->unk_id());
+  EXPECT_EQ(lite_processor_->PieceToId(std::string_view()),
+            lite_processor_->unk_id());
   EXPECT_EQ(lite_processor_->GetScore(-1), 0.0f);
   EXPECT_EQ(lite_processor_->GetScore(static_cast<int>(vocab_size)), 0.0f);
   EXPECT_EQ(lite_processor_->unk_id(), 0);
@@ -483,8 +485,10 @@ TEST_P(SentencePieceLiteTest, IdempotencyOnLargeCorpus) {
     ASSERT_EQ(lite_processor_->Decode(lite_ids, &lite_decoded),
               StatusCode::kOk);
 
-    const bool byte_fallback = (lite_processor_->PieceToId("<0x00>") != -1);
-    const int unk_id = lite_processor_->PieceToId("<unk>");
+    const bool byte_fallback =
+        (lite_processor_->piece_type(lite_processor_->PieceToId("<0x00>")) ==
+         static_cast<int>(PieceType_BYTE));
+    const int unk_id = lite_processor_->unk_id();
     if (!byte_fallback &&
         std::find(lite_ids.begin(), lite_ids.end(), unk_id) != lite_ids.end()) {
       continue;
@@ -1707,6 +1711,7 @@ TEST(SentencePieceLiteTest, ByteFallbackWithoutUnkId) {
   SentencePieceLiteProcessor processor(*ok_res);
   EXPECT_EQ(processor.status(), StatusCode::kOk);
   EXPECT_EQ(processor.unk_id(), -1);
+  EXPECT_EQ(processor.PieceToId("NON_EXISTING_PIECE"), -1);
   EXPECT_EQ(processor.IdToPiece(-1), "<unk>");
 
   // Unknown character 'b' (0x62) falls back to byte token (1 + 0x62 = 99).
@@ -1875,6 +1880,52 @@ TEST(SentencePieceModelConvertersTest, RejectInvalidBpeScores) {
     auto status_or = ToFlatbuffer(proto);
     EXPECT_FALSE(status_or.ok());
     EXPECT_EQ(status_or.status().code(), absl::StatusCode::kInvalidArgument);
+  }
+}
+
+TEST(SentencePieceModelConvertersTest,
+     WordAndCharModelConversionAndUnigramFallback) {
+  for (const auto model_type : {::sentencepiece::TrainerSpec::WORD,
+                                ::sentencepiece::TrainerSpec::CHAR}) {
+    ::sentencepiece::ModelProto proto = MinimalUnigramProto();
+    proto.mutable_trainer_spec()->set_model_type(model_type);
+    auto* p1 = proto.add_pieces();
+    p1->set_piece("▁a");
+    p1->set_type(::sentencepiece::ModelProto::SentencePiece::NORMAL);
+    p1->set_score(-1.5f);
+    auto* p2 = proto.add_pieces();
+    p2->set_piece("b");
+    p2->set_type(::sentencepiece::ModelProto::SentencePiece::NORMAL);
+    p2->set_score(-2.5f);
+
+    // Rejected by default when allow_unsupported_model_type is false.
+    auto status_or_default = ToFlatbuffer(proto);
+    EXPECT_FALSE(status_or_default.ok());
+    EXPECT_EQ(status_or_default.status().code(),
+              absl::StatusCode::kInvalidArgument);
+
+    // Allowed when allow_unsupported_model_type is true; model_type is
+    // preserved in FlatBuffers and processor operates internally as UNIGRAM.
+    ConverterOptions options;
+    options.allow_unsupported_model_type = true;
+    auto status_or_allowed = ToFlatbuffer(proto, options);
+    ASSERT_TRUE(status_or_allowed.ok()) << status_or_allowed.status();
+
+    const auto* fb_model = GetModelProto(status_or_allowed->data());
+    ASSERT_NE(fb_model, nullptr);
+    EXPECT_EQ(fb_model->model_type(),
+              model_type == ::sentencepiece::TrainerSpec::WORD
+                  ? ModelType_WORD
+                  : ModelType_CHAR);
+
+    SentencePieceLiteProcessor processor(*status_or_allowed);
+    ASSERT_EQ(processor.status(), StatusCode::kOk);
+    EXPECT_FLOAT_EQ(processor.GetScore(2), -1.5f);
+    EXPECT_FLOAT_EQ(processor.GetScore(3), -2.5f);
+
+    std::vector<int> ids;
+    ASSERT_EQ(processor.EncodeNormalized("▁ab", &ids), StatusCode::kOk);
+    EXPECT_EQ(ids, (std::vector<int>{2, 3}));
   }
 }
 
@@ -2060,6 +2111,13 @@ TEST(SentencePieceLiteTest, DecodeWithAndWithoutNonLeadingSpaceSymbols) {
     EXPECT_EQ(decoded, "foo  bar baza b");
     EXPECT_EQ(pieces,
               (std::vector<std::string_view>{"foo ", " bar baz", "a b"}));
+
+    // Mid-loop out-of-range ID must clear output and pieces rather than leaving
+    // unadjusted integer offsets in pieces.
+    EXPECT_EQ(processor.Decode({2, 999999}, &decoded, &pieces),
+              StatusCode::kOutOfRange);
+    EXPECT_TRUE(decoded.empty());
+    EXPECT_TRUE(pieces.empty());
   }
 }
 

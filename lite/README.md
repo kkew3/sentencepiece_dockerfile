@@ -164,15 +164,28 @@ if (processor.Decode(ids, &text) == sentencepiece::lite::StatusCode::kOk) {
 
 > **Note**: While original `.model` files are endian-independent, FlatBuffers binary files (`.spm.fb`) are endian-dependent. They are fully interoperable across most common little-endian platforms (e.g., x86_64, ARM64, Apple Silicon). Please convert `.model` files on the target machine if using different endian architectures.
 
-### 5.1. Offline Model Conversion (CLI)
+### 5.1. Offline Model Conversion (CLI & Python)
 
-Convert an original SentencePiece model (`.model`) to a FlatBuffers model (`.spm.fb`) using the converter tool:
+Convert an original SentencePiece model (`.model`) to a FlatBuffers model (`.spm.fb`) using the converter CLI tool:
 
 ```bash
 # Convert .model to .spm.fb
 ./build/lite/spm_to_fb --model=model.model --output=model.spm.fb
 # Or with Bazel:
 bazel run //lite:spm_to_fb -- --model=model.model --output=model.spm.fb
+```
+
+Or convert from Python using `sentencepiece.convert_to_flatbuffer` (`ConvertToFlatbuffer`, requires `sentencepiece >= 0.2.3`):
+
+```python
+import sentencepiece as spm
+
+# Convert .model file directly to .spm.fb file
+spm.convert_to_flatbuffer(model_file='model.model', output_file='model.spm.fb')
+
+# Or convert in memory (returns FlatBuffers bytes) from model_file,
+# serialized_model_proto (bytes), or a ModelProto object:
+fb_bytes: bytes = spm.convert_to_flatbuffer(model_file='model.model')
 ```
 
 Loading a pre-converted `.spm.fb` file using `mmap` provides zero-copy startup and zero heap allocations.
@@ -258,7 +271,7 @@ StatusCode PretokenizeAtSafeBoundaries(
 #### Algorithm & Implementation Details
 
 *   **Character Bigram Co-occurrence Principle**: If a character bigram $(C_i, C_{i+1})$ never appears inside any subword token in the vocabulary, no subword piece can span across the boundary between $C_i$ and $C_{i+1}$. The input text can therefore be split safely at this boundary before encoding.
-*   **AC-style State Reuse Traversal**: All valid character bigrams present in the vocabulary are compiled offline into a Double-Array Trie (`char_bigram_blob`). During input scanning, the runtime reuses single-character trie node state transitions across adjacent pairs (similar to Aho-Corasick failure links). This scans the text in linear $O(N)$ time with zero heap allocations.
+*   **AC-style State Reuse Traversal**: All valid character bigrams present in the vocabulary are compiled offline into a Double-Array Trie (`char_bigram_trie_blob`). During input scanning, the runtime reuses single-character trie node state transitions across adjacent pairs (similar to Aho-Corasick failure links). This scans the text in linear $O(N)$ time with zero heap allocations.
 *   **BPE Queue Complexity Reduction**: For BPE models, splitting a long sentence into $k$ independent chunks reduces priority-queue merge complexity from $O(N \log N)$ to $O(N \log(N/k))$, while enabling trie-based vocabulary shortcut lookups that bypass the priority queue entirely for frequent subwords.
 
 #### Application Example: Parallel Document Tokenization

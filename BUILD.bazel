@@ -1,5 +1,3 @@
-load("@rules_cc//cc:defs.bzl", "cc_library")
-
 package(default_visibility = ["//visibility:public"])
 
 exports_files(
@@ -81,6 +79,11 @@ alias(
 alias(
     name = "cached_sentencepiece_lite",
     actual = "//lite:cached_sentencepiece_lite",
+)
+
+alias(
+    name = "sentencepiece_model_converters",
+    actual = "//lite:sentencepiece_model_converters",
 )
 
 alias(

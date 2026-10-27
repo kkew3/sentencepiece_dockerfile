@@ -17,7 +17,6 @@
 
 #include <cstdint>
 #include <memory>
-#include <set>
 #include <string>
 #include <utility>
 #include <vector>
@@ -30,7 +29,6 @@
 #include "normalizer.h"
 #include "sentencepiece_model.pb.h"
 #include "sentencepiece_processor.h"
-#include "darts.h"
 
 namespace sentencepiece {
 
@@ -107,11 +105,11 @@ class ModelInterface {
 
   // Returns the vocab id of `piece`.
   // both `pieces_` and `reserved_id_map_` are checked.
-  // Returns UNK(0) if `piece` is unknown
+  // Returns `unk_id()` if `piece` is unknown.
   [[nodiscard]] virtual int PieceToId(absl::string_view piece) const;
 
   // Returns the vocab id of `piece`.
-  // Returns UNK(0) if `piece` is unknown
+  // Returns `unk_id()` if `piece` is unknown.
   // It does not use reserved_id_map_ for the optimization sake,
   // e.g., BPE merges only with normal pieces.
   [[nodiscard]] int PieceToIdNoReserved(absl::string_view piece) const;
@@ -137,9 +135,7 @@ class ModelInterface {
   // Score represents a log probability of the piece.
   // We can roughly estimate the unigram frequency of the piece.
   [[nodiscard]] virtual float GetScore(int id) const {
-    DCHECK_GE(id, 0);
-    DCHECK_LT(id, model_proto_->pieces_size());
-    return model_proto_->pieces(id).score();
+    return GetScoreInlined(id);
   }
 
   // Returns true if `id` is unknown symbol.
@@ -160,18 +156,12 @@ class ModelInterface {
 
   // Returns true if `id` is unused symbol.
   [[nodiscard]] virtual bool IsUnused(int id) const {
-    DCHECK_GE(id, 0);
-    DCHECK_LT(id, model_proto_->pieces_size());
-    return (model_proto_->pieces(id).type() ==
-            ModelProto::SentencePiece::UNUSED);
+    return IsUnusedInlined(id);
   }
 
   // Returns true if `id` is user defined symbol.
   [[nodiscard]] virtual bool IsUserDefined(int id) const {
-    DCHECK_GE(id, 0);
-    DCHECK_LT(id, model_proto_->pieces_size());
-    return (model_proto_->pieces(id).type() ==
-            ModelProto::SentencePiece::USER_DEFINED);
+    return IsUserDefinedInlined(id);
   }
 
   // Returns true if `id` is byte symbol.
@@ -184,6 +174,10 @@ class ModelInterface {
   [[nodiscard]] virtual bool ByteFallbackEnabled() const {
     return (model_proto_ != nullptr) &&
            model_proto_->trainer_spec().byte_fallback();
+  }
+
+  [[nodiscard]] bool has_internal_space_symbol() const {
+    return has_internal_space_symbol_;
   }
 
  protected:
@@ -201,20 +195,6 @@ class ModelInterface {
     return model_proto_->pieces(id).score();
   }
 
-  [[nodiscard]] bool IsUnknownInlined(int id) const {
-    DCHECK_GE(id, 0);
-    DCHECK_LT(id, model_proto_->pieces_size());
-    return (model_proto_->pieces(id).type() ==
-            ModelProto::SentencePiece::UNKNOWN);
-  }
-
-  [[nodiscard]] bool IsControlInlined(int id) const {
-    DCHECK_GE(id, 0);
-    DCHECK_LT(id, model_proto_->pieces_size());
-    return (model_proto_->pieces(id).type() ==
-            ModelProto::SentencePiece::CONTROL);
-  }
-
   [[nodiscard]] bool IsUnusedInlined(int id) const {
     DCHECK_GE(id, 0);
     DCHECK_LT(id, model_proto_->pieces_size());
@@ -227,12 +207,6 @@ class ModelInterface {
     DCHECK_LT(id, model_proto_->pieces_size());
     return (model_proto_->pieces(id).type() ==
             ModelProto::SentencePiece::USER_DEFINED);
-  }
-
-  [[nodiscard]] bool IsByteInlined(int id) const {
-    DCHECK_GE(id, 0);
-    DCHECK_LT(id, model_proto_->pieces_size());
-    return (model_proto_->pieces(id).type() == ModelProto::SentencePiece::BYTE);
   }
 
   [[nodiscard]] bool IsReservedId(int id) const {
@@ -257,6 +231,11 @@ class ModelInterface {
 
   // unknown id.
   int unk_id_ = 0;
+
+  // True if any vocabulary piece contains an internal space symbol ("▁" after
+  // any leading "▁"). Defaults to true for mock models that do not call
+  // InitializePieces().
+  bool has_internal_space_symbol_ = true;
 
   // status.
   absl::Status status_;

@@ -15,10 +15,8 @@
 #include "trainer_interface.h"
 
 #include <algorithm>
-#include <cstdlib>
 #include <limits>
 #include <memory>
-#include <set>
 #include <string>
 #include <utility>
 #include <vector>
@@ -28,7 +26,6 @@
 #include "absl/flags/flag.h"
 #include "absl/log/check.h"
 #include "absl/log/log.h"
-#include "absl/random/random.h"
 #include "absl/status/status.h"
 #include "absl/status/status_macros.h"
 #include "absl/strings/match.h"
@@ -40,7 +37,6 @@
 #include "absl/strings/str_split.h"
 #include "absl/strings/string_view.h"
 #include "filesystem.h"
-#include "model_factory.h"
 #include "model_interface.h"
 #include "normalizer.h"
 #include "ret_check.h"
@@ -430,7 +426,7 @@ absl::Status TrainerInterface::LoadSentences() {
       continue;
     }
 
-    if (sentence.find(kUNKStr) != std::string::npos) {
+    if (absl::StrContains(sentence, kUNKStr)) {
       LOG(INFO) << "Reserved chars are found. Skipped: " << sentence;
       continue;
     }
@@ -499,13 +495,15 @@ END:
         },
         pool));
 
-    for (size_t i = 0; i < sentences_.size(); ++i) {
+    for (size_t i = 0; i < sentences_.size();) {
       auto* s = &sentences_[i].first;
       RET_CHECK(s->find(" ") == std::string::npos)
           << "Normalized string must not include spaces";
       if (s->empty()) {
-        std::swap(sentences_[i], sentences_[sentences_.size() - 1]);
-        sentences_.resize(sentences_.size() - 1);
+        std::swap(sentences_[i], sentences_.back());
+        sentences_.pop_back();
+      } else {
+        ++i;
       }
     }
   }
@@ -528,28 +526,54 @@ END:
       chars_count[c].first = true;  // is_required_character.
     }
 
-    for (const auto& w : sentences_) {
-      for (const char32_t c : string_util::UTF8ToUnicodeText(w.first)) {
-        if (!string_util::IsValidCodepoint(c)) {
-          continue;
+    if (!sentences_.empty()) {
+      const int num_workers =
+          std::min<size_t>(trainer_spec_.num_threads(), sentences_.size());
+      std::vector<absl::flat_hash_map<char32_t, int64_t>> local_chars_counts(
+          num_workers);
+      std::vector<bool> local_has_space_errors(num_workers, false);
+      {
+        ThreadPool pool(num_workers);
+        for (int n = 0; n < num_workers; ++n) {
+          pool.Schedule([&, n]() {
+            absl::flat_hash_map<char32_t, int64_t>& local_counts =
+                local_chars_counts[n];
+            for (size_t i = n; i < sentences_.size(); i += num_workers) {
+              const auto& w = sentences_[i];
+              for (const char32_t c : string_util::UTF8ToUnicodeText(w.first)) {
+                if (!string_util::IsValidCodepoint(c)) {
+                  continue;
+                }
+                if (c == 0x0000) {
+                  LOG(INFO) << "Found null character. The corpus must be "
+                               "encoded in utf-8.";
+                  continue;
+                }
+                if (c == 0x0020) {
+                  // UTF8ToUnicodeText returns a white space if the text
+                  // contains an interchange-invalid character.
+                  if (absl::StrContains(w.first, " ")) {
+                    local_has_space_errors[n] = true;
+                  }
+                  continue;
+                }
+                local_counts[c] += w.second;
+              }
+            }
+          });
         }
-        if (c == 0x0000) {
-          LOG(INFO)
-              << "Found null character. The corpus must be encoded in utf-8.";
-          continue;
+      }
+      for (int n = 0; n < num_workers; ++n) {
+        RET_CHECK(!local_has_space_errors[n])
+            << "space must not be included in normalized string.";
+        for (const auto& [c, count] : local_chars_counts[n]) {
+          chars_count[c].second += count;
+          all_chars_count += count;
         }
-        if (c == 0x0020) {
-          // UTF8ToUnicodeText returns a white space if the text
-          // contains an interchange-invalid character.
-          RET_CHECK(w.first.find(" ") == std::string::npos)
-              << "space must not be included in normalized string.";
-          continue;
-        }
-        chars_count[c].second += w.second;
-        all_chars_count += w.second;
       }
     }
     LOG(INFO) << "all chars count=" << all_chars_count;
+    RET_CHECK_GT(all_chars_count, 0);
 
     // Determines required_chars which must be included in the vocabulary.
     int64_t accumulated_chars_count = 0;
@@ -582,16 +606,31 @@ END:
 
     // Replaces rare characters (characters not included in required_chars_)
     // with kUNKChar.
-    for (auto& w : sentences_) {
-      string_util::UnicodeText uw2;
-      for (const char32_t c : string_util::UTF8ToUnicodeText(w.first)) {
-        if (required_chars_.contains(c)) {
-          uw2.push_back(c);
-        } else {
-          uw2.push_back(kUNKChar);
+    if (!sentences_.empty()) {
+      const int num_workers =
+          std::min<size_t>(trainer_spec_.num_threads(), sentences_.size());
+      {
+        ThreadPool pool(num_workers);
+        for (int n = 0; n < num_workers; ++n) {
+          pool.Schedule([&, n]() {
+            string_util::UnicodeText uw2;
+            for (size_t i = n; i < sentences_.size(); i += num_workers) {
+              auto& w = sentences_[i];
+              const auto uw = string_util::UTF8ToUnicodeText(w.first);
+              uw2.clear();
+              uw2.reserve(uw.size());
+              for (const char32_t c : uw) {
+                if (required_chars_.contains(c)) {
+                  uw2.push_back(c);
+                } else {
+                  uw2.push_back(kUNKChar);
+                }
+              }
+              w.first = string_util::UnicodeTextToUTF8(uw2);
+            }
+          });
         }
       }
-      w.first = string_util::UnicodeTextToUTF8(uw2);
     }
 
     if (trainer_spec_.model_type() != TrainerSpec::WORD &&
@@ -605,6 +644,12 @@ END:
           << "Increase vocab_size or decrease character_coverage with "
           << "--character_coverage option.";
     }
+  } else if (trainer_spec_.model_type() != TrainerSpec::WORD &&
+             trainer_spec_.model_type() != TrainerSpec::CHAR) {
+    RET_CHECK_LT(static_cast<int>(meta_pieces_.size()),
+                 trainer_spec_.vocab_size())
+        << "Vocabulary size must be larger than the number of meta pieces ("
+        << trainer_spec_.vocab_size() << " vs " << meta_pieces_.size() << ").";
   }
 
   LOG(INFO) << "Done! preprocessed " << sentences_.size() << " sentences.";
@@ -616,11 +661,31 @@ void TrainerInterface::SplitSentencesByWhitespace() {
   LOG(INFO) << "Tokenizing input sentences with whitespace: "
             << sentences_.size();
   absl::flat_hash_map<std::string, int64_t> tokens;
-  for (const auto& s : sentences_) {
-    for (const auto& w :
-         SplitIntoWords(s.first, trainer_spec_.treat_whitespace_as_suffix(),
-                        trainer_spec_.allow_whitespace_only_pieces())) {
-      tokens[w] += s.second;
+  if (!sentences_.empty()) {
+    const int num_workers =
+        std::min<size_t>(trainer_spec_.num_threads(), sentences_.size());
+    std::vector<absl::flat_hash_map<std::string, int64_t>> local_tokens(
+        num_workers);
+    {
+      ThreadPool pool(num_workers);
+      for (int n = 0; n < num_workers; ++n) {
+        pool.Schedule([&, n]() {
+          auto& local = local_tokens[n];
+          for (size_t i = n; i < sentences_.size(); i += num_workers) {
+            const auto& s = sentences_[i];
+            for (const auto& w : SplitIntoWords(
+                     s.first, trainer_spec_.treat_whitespace_as_suffix(),
+                     trainer_spec_.allow_whitespace_only_pieces())) {
+              local[w] += s.second;
+            }
+          }
+        });
+      }
+    }
+    for (int n = 0; n < num_workers; ++n) {
+      for (const auto& [token, freq] : local_tokens[n]) {
+        tokens[token] += freq;
+      }
     }
   }
   sentences_ = Sorted(tokens);

@@ -25,7 +25,6 @@
 #include "absl/container/flat_hash_map.h"
 #include "absl/random/random.h"
 #include "absl/strings/string_view.h"
-#include "freelist.h"
 #include "model_interface.h"
 #include "sentencepiece_model.pb.h"
 #include "util.h"
@@ -279,13 +278,17 @@ std::vector<std::pair<absl::string_view, int>> Model::SampleEncode(
       output->emplace_back(w, id);
       return;
     }
-    if (id == -1 || !IsUnusedInlined(id)) {
+    if (id == unk_id_ || IsReservedId(id)) {
+      output->emplace_back(w, unk_id_);
+      return;
+    }
+    if (!IsUnusedInlined(id)) {
       output->emplace_back(w, id);
       return;
     }
     const auto p = rev_merge.find(w);
     if (p == rev_merge.end()) {
-      output->emplace_back(w, id);
+      output->emplace_back(w, unk_id_);
       return;
     }
     // Direct recursive calls

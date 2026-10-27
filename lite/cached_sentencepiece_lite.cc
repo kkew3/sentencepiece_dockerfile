@@ -16,7 +16,6 @@
 
 #include <cstddef>
 #include <cstdint>
-#include <cstring>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -39,13 +38,24 @@ inline uint64_t FastHash64(std::string_view str, uint64_t seed) {
   return rapidhash_withSeed_unrolled(str.data(), str.size(), seed);
 }
 
+inline size_t ResolveCapacity(TokenCache::Capacity capacity) {
+  switch (capacity) {
+    case TokenCache::Capacity::kTiny:
+    case TokenCache::Capacity::kSmall:
+    case TokenCache::Capacity::kMedium:
+    case TokenCache::Capacity::kLarge:
+      return static_cast<size_t>(capacity);
+  }
+  return static_cast<size_t>(TokenCache::Capacity::kMedium);
+}
+
 }  // namespace
 
 TokenCache::TokenCache() : TokenCache(Capacity::kMedium, PointerSeed(this)) {}
 
 TokenCache::TokenCache(Capacity capacity, uint64_t seed)
-    : num_pairs_(static_cast<size_t>(capacity)),
-      mask_(static_cast<size_t>(capacity) - 1),
+    : num_pairs_(ResolveCapacity(capacity)),
+      mask_(ResolveCapacity(capacity) - 1),
       seed_((seed == 0) ? PointerSeed(this) : seed) {
   Clear();
 }
@@ -80,26 +90,39 @@ StatusCode CachedSentencePieceLite::EncodeNormalized(
   const uint64_t effective_seed = cache.seed() ^ PointerSeed(&processor);
 
   ids->reserve(normalized_text.size() / kExpectedBytesPerToken + 1);
+  // Encode merges a run of unknown pieces into one unk_id, also across
+  // chunks, so a chunk's leading unk_id joins a trailing one.
+  const int unk_id = processor.unk_id();
+  auto append = [ids, unk_id](const auto* begin, const auto* end) {
+    if (begin != end && !ids->empty() && ids->back() == unk_id &&
+        *begin == unk_id) {
+      ++begin;
+    }
+    ids->insert(ids->end(), begin, end);
+  };
   std::vector<int> chunk_ids;
-  return processor.PretokenizeAtSafeBoundaries(
+  StatusCode chunk_status = StatusCode::kOk;
+  StatusCode status = processor.PretokenizeAtSafeBoundaries(
       normalized_text, [&](std::string_view chunk) {
-        if (chunk.empty()) return;
+        if (chunk.empty() || chunk_status != StatusCode::kOk) return;
         const uint64_t hash = FastHash64(chunk, effective_seed);
         const uint16_t tag = TokenCache::MakeChunkTag(chunk);
         size_t count = 0;
         const int32_t* cached_ids = cache.Lookup(hash, tag, &count);
         if (cached_ids != nullptr) {
-          ids->insert(ids->end(), cached_ids, cached_ids + count);
+          append(cached_ids, cached_ids + count);
           return;
         }
         chunk_ids.clear();
-        processor.EncodeNormalizedChunk(chunk, &chunk_ids);
-        ids->insert(ids->end(), chunk_ids.begin(), chunk_ids.end());
+        chunk_status = processor.EncodeNormalizedChunk(chunk, &chunk_ids);
+        if (chunk_status != StatusCode::kOk) return;
+        append(chunk_ids.data(), chunk_ids.data() + chunk_ids.size());
         if (!chunk_ids.empty() &&
             chunk_ids.size() <= TokenCache::kMaxCachedTokenCount) {
           cache.Insert(hash, tag, chunk_ids.data(), chunk_ids.size());
         }
       });
+  return status != StatusCode::kOk ? status : chunk_status;
 }
 
 }  // namespace sentencepiece::lite

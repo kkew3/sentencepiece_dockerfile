@@ -191,20 +191,9 @@ if (SPM_ABSL_PROVIDER STREQUAL "module")
     GIT_SHALLOW TRUE
   )
   FetchContent_MakeAvailable(abseil-cpp)
-  FetchContent_GetProperties(abseil-cpp SOURCE_DIR abseil_SOURCE_DIR)
-  file(REMOVE ${CMAKE_CURRENT_SOURCE_DIR}/third_party/absl)
-  file(CREATE_LINK
-       ${abseil_SOURCE_DIR}/absl
-       ${CMAKE_CURRENT_SOURCE_DIR}/third_party/absl
-       SYMBOLIC)
 elseif (SPM_ABSL_PROVIDER STREQUAL "package")
   find_package(absl REQUIRED)
   get_target_property(ABSL_INCLUDE_DIRS absl::base INTERFACE_INCLUDE_DIRECTORIES)
-  file(REMOVE ${CMAKE_CURRENT_SOURCE_DIR}/third_party/absl)
-  file(CREATE_LINK
-       ${ABSL_INCLUDE_DIRS}/absl
-       ${CMAKE_CURRENT_SOURCE_DIR}/third_party/absl
-       SYMBOLIC)
   include_directories(${ABSL_INCLUDE_DIRS})
 endif()
 
@@ -266,6 +255,35 @@ elseif (SPM_PROTOBUF_PROVIDER STREQUAL "package")
   set(PROTOBUF_LITE_LIBRARY protobuf::libprotobuf-lite)
 endif()
 
+# FlatBuffers
+if (NOT TARGET flatbuffers)
+  include(FetchContent)
+  set(FLATBUFFERS_BUILD_TESTS OFF CACHE BOOL "Disable flatbuffers tests" FORCE)
+  set(FLATBUFFERS_BUILD_FLATLIB ON CACHE BOOL "Enable flatbuffers library" FORCE)
+  set(FLATBUFFERS_INSTALL OFF CACHE BOOL "Disable flatbuffers install" FORCE)
+  if (SPM_FLATC_EXECUTABLE)
+    set(FLATBUFFERS_BUILD_FLATC OFF CACHE BOOL "Disable flatc binary as SPM_FLATC_EXECUTABLE is set" FORCE)
+  else()
+    set(FLATBUFFERS_BUILD_FLATC ON CACHE BOOL "Enable flatc binary" FORCE)
+  endif()
+  FetchContent_Declare(
+    flatbuffers
+    GIT_REPOSITORY https://github.com/google/flatbuffers.git
+    GIT_TAG v25.12.19-2026-02-06-03fffb2
+    GIT_SHALLOW TRUE
+    SOURCE_DIR "${CMAKE_BINARY_DIR}/third_party/flatbuffers-src"
+  )
+  FetchContent_MakeAvailable(flatbuffers)
+  FetchContent_GetProperties(flatbuffers SOURCE_DIR flatbuffers_SOURCE_DIR)
+  if (flatbuffers_SOURCE_DIR)
+    file(REMOVE_RECURSE "${flatbuffers_SOURCE_DIR}/tests/fuzzer")
+  endif()
+  if (SPM_FLATC_EXECUTABLE AND NOT TARGET flatc)
+    add_executable(flatc IMPORTED GLOBAL)
+    set_target_properties(flatc PROPERTIES IMPORTED_LOCATION "${SPM_FLATC_EXECUTABLE}")
+  endif()
+endif()
+
 # Googletest (Testing; also linked by the benchmarks)
 if (SPM_BUILD_TEST OR SPM_ENABLE_BENCHMARK)
   if (SPM_BUILD_TEST)
@@ -290,7 +308,7 @@ if(SPM_ENABLE_BENCHMARK)
   FetchContent_Declare(
     google_benchmark
     GIT_REPOSITORY https://github.com/google/benchmark.git
-    GIT_TAG v1.9.5
+    GIT_TAG v1.10.0
     GIT_SHALLOW TRUE
   )
   FetchContent_MakeAvailable(google_benchmark)
@@ -315,16 +333,9 @@ endif()
 
 if (UNIX)
   include(GNUInstallDirs)
-  set(prefix ${CMAKE_INSTALL_PREFIX})
-  set(exec_prefix "\${prefix}")
-  set(libdir "\${exec_prefix}/${CMAKE_INSTALL_LIBDIR}")
-  set(includedir "\${prefix}/${CMAKE_INSTALL_INCLUDEDIR}")
-else()
-  set(prefix ${CMAKE_INSTALL_PREFIX})
-  set(exec_prefix "\${prefix}")
-  set(libdir "\${exec_prefix}/lib")
-  set(includedir "\${prefix}/include")
 endif()
+set(prefix ${CMAKE_INSTALL_PREFIX})
+set(exec_prefix "\${prefix}")
 
 # Helper function for path concatenation
 function(join_paths joined_path first_path_segment)
@@ -347,11 +358,7 @@ join_paths(datadir_for_pc_file "\${prefix}" "${CMAKE_INSTALL_DATADIR}" "sentence
 join_paths(datadir_for_config_file "${prefix}" "${CMAKE_INSTALL_DATADIR}" "sentencepiece")
 set(INSTALL_DATADIR ${datadir_for_config_file})
 
-if (SPM_PROTOBUF_PROVIDER STREQUAL "module" OR SPM_PROTOBUF_PROVIDER STREQUAL "package")
-  set(libprotobuf_lite "protobuf-lite")
-else()
-  set(libprotobuf_lite "")
-endif()
+set(libprotobuf_lite "protobuf-lite")
 
 configure_file("${PROJECT_SOURCE_DIR}/config.h.in" "config.h")
 configure_file("${PROJECT_SOURCE_DIR}/sentencepiece.pc.in" "sentencepiece.pc" @ONLY)
@@ -371,7 +378,6 @@ include_directories(${CMAKE_CURRENT_SOURCE_DIR} ${PROJECT_BINARY_DIR})
 # 6. Subdirectories
 # ==============================================================================
 add_subdirectory(src)
-add_subdirectory(third_party)
 if(SPM_ENABLE_LITE AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/lite/CMakeLists.txt")
   add_subdirectory(lite)
 endif()
@@ -380,8 +386,13 @@ endif()
 # 7. CPack Packaging
 # ==============================================================================
 if (SPM_IS_TOP_LEVEL)
+  if (CMAKE_VS_PLATFORM_NAME)
+    set(SPM_PACKAGE_ARCH "${CMAKE_VS_PLATFORM_NAME}")
+  else()
+    set(SPM_PACKAGE_ARCH "${CMAKE_SYSTEM_PROCESSOR}")
+  endif()
   set(CPACK_PACKAGE_FILE_NAME
-      "sentencepiece-${SPM_VERSION}-${CMAKE_SYSTEM_NAME}-${CMAKE_SYSTEM_PROCESSOR}")
+      "sentencepiece-${SPM_VERSION}-${CMAKE_SYSTEM_NAME}-${SPM_PACKAGE_ARCH}")
   set(CPACK_SOURCE_GENERATOR "TXZ")
   set(CPACK_GENERATOR "7Z")
   set(CPACK_PACKAGE_VERSION "${SPM_VERSION}")
@@ -390,6 +401,6 @@ if (SPM_IS_TOP_LEVEL)
   set(CPACK_RESOURCE_FILE_README "${PROJECT_SOURCE_DIR}/README.md")
   set(CPACK_PACKAGE_CONTACT "taku@google.com")
   set(CPACK_DEBIAN_PACKAGE_MAINTAINER "Taku Kudo")
-  set(CPACK_SOURCE_IGNORE_FILES "/build/;/.git/;/dist/;/sdist/;~$;${CPACK_SOURCE_IGNORE_FILES}")
+  set(CPACK_SOURCE_IGNORE_FILES "/build/;/.git/;/dist/;/sdist/;/_docs_build/;/site/;/bazel-.*/;~$;${CPACK_SOURCE_IGNORE_FILES}")
   include(CPack)
 endif()

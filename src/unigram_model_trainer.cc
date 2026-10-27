@@ -18,8 +18,8 @@
 #include <cfloat>
 #include <cmath>
 #include <cstdint>
-#include <deque>
 #include <functional>
+#include <limits>
 #include <memory>
 #include <numeric>
 #include <string>
@@ -27,31 +27,25 @@
 #include <vector>
 
 #include "absl/container/flat_hash_map.h"
+#include "absl/container/flat_hash_set.h"
+#include "absl/flags/flag.h"
 #include "absl/log/check.h"
 #include "absl/log/log.h"
 #include "absl/status/status.h"
 #include "absl/status/status_macros.h"
 #include "absl/strings/numbers.h"
-#include "absl/strings/str_cat.h"
-#include "absl/strings/str_format.h"
-#include "absl/strings/str_join.h"
-#include "absl/strings/str_replace.h"
 #include "absl/strings/str_split.h"
 #include "absl/strings/string_view.h"
 #include "filesystem.h"
 #include "libsais.h"
-#include "normalizer.h"
 #include "ret_check.h"
 #include "sentencepiece_trainer.h"
 #include "trainer_interface.h"
-#include "unicode_script.h"
 #include "util.h"
 
 namespace sentencepiece {
 namespace unigram {
 namespace {
-
-constexpr char32_t kSentenceBoundary = 0x0000;
 
 double Digamma(double x) {
   double result = 0.0;
@@ -67,13 +61,14 @@ double Digamma(double x) {
 
 template <typename IT>
 void ToLogProb(IT begin, IT end) {
-  float sum = 0.0;
+  double sum = 0.0;
   for (auto it = begin; it != end; ++it) {
     sum += it->second;
   }
-  float logsum = std::log(static_cast<double>(sum));
+  const double logsum = std::log(sum);
   for (auto it = begin; it != end; ++it) {
-    it->second = std::log(static_cast<double>(it->second)) - logsum;
+    it->second =
+        static_cast<float>(std::log(static_cast<double>(it->second)) - logsum);
   }
 }
 
@@ -101,20 +96,20 @@ class BoundedPriorityQueue {
     return data_;
   }
 
-  std::vector<std::pair<std::string, uint64_t>> Get() {
+  std::vector<std::pair<std::string, float>> Get() {
     struct ItemScore {
-      const std::string* key;
-      uint64_t score;
+      std::string* key;
+      float score;
     };
 
     std::vector<ItemScore> items;
     items.reserve(data_.size());
     const float power = absl::GetFlag(FLAGS_seed_piece_length_power);
 
-    for (const auto& [key, freq] : data_) {
+    for (auto& [key, freq] : data_) {
       if (freq < 2) continue;
       const float score = CalculatePieceScore(key, freq, power);
-      items.push_back({&key, static_cast<uint64_t>(score)});
+      items.push_back({const_cast<std::string*>(&key), score});
     }
 
     std::sort(
@@ -124,11 +119,11 @@ class BoundedPriorityQueue {
                  std::forward_as_tuple(lhs.score, lhs.key->size(), *rhs.key);
         });
 
-    std::vector<std::pair<std::string, uint64_t>> results;
+    std::vector<std::pair<std::string, float>> results;
     const size_t keep = std::min(items.size(), max_capacity_);
     results.reserve(keep);
     for (size_t i = 0; i < keep; ++i) {
-      results.emplace_back(*items[i].key, items[i].score);
+      results.emplace_back(std::move(*items[i].key), items[i].score);
     }
     data_.clear();
     return results;
@@ -148,8 +143,8 @@ class BoundedPriorityQueue {
 
   static float CalculatePieceScore(absl::string_view key, uint64_t freq,
                                    float power) {
-    const UnicodeText pw = string_util::UTF8ToUnicodeText(key);
-    return CalculateScore(freq, static_cast<float>(pw.size()), power);
+    return CalculateScore(freq, static_cast<float>(string_util::UTF8Len(key)),
+                          power);
   }
 
   void Gc() {
@@ -157,31 +152,31 @@ class BoundedPriorityQueue {
               << data_.size() << ", keeping top " << gc_keep_capacity_
               << " highest-scoring items)...";
     using MapPair = std::pair<const std::string, uint64_t>;
-    std::vector<const MapPair*> tmp;
+    struct GcItem {
+      const MapPair* kv;
+      float score;
+    };
+    const float power = absl::GetFlag(FLAGS_seed_piece_length_power);
+    std::vector<GcItem> tmp;
     tmp.reserve(data_.size());
     for (const auto& kv : data_) {
-      tmp.push_back(&kv);
+      tmp.push_back({&kv, CalculatePieceScore(kv.first, kv.second, power)});
     }
 
-    const float power = absl::GetFlag(FLAGS_seed_piece_length_power);
-
     const size_t keep = std::min(tmp.size(), gc_keep_capacity_);
-    std::nth_element(tmp.begin(), tmp.begin() + keep, tmp.end(),
-                     [power](const MapPair* lhs, const MapPair* rhs) {
-                       const float lhs_score =
-                           CalculatePieceScore(lhs->first, lhs->second, power);
-                       const float rhs_score =
-                           CalculatePieceScore(rhs->first, rhs->second, power);
-                       return std::forward_as_tuple(
-                                  rhs_score, rhs->first.size(), lhs->first) <
-                              std::forward_as_tuple(
-                                  lhs_score, lhs->first.size(), rhs->first);
-                     });
+    std::nth_element(
+        tmp.begin(), tmp.begin() + keep, tmp.end(),
+        [](const GcItem& lhs, const GcItem& rhs) {
+          return std::forward_as_tuple(rhs.score, rhs.kv->first.size(),
+                                       lhs.kv->first) <
+                 std::forward_as_tuple(lhs.score, lhs.kv->first.size(),
+                                       rhs.kv->first);
+        });
 
     absl::flat_hash_map<std::string, uint64_t> new_data;
     new_data.reserve(keep);
     for (size_t i = 0; i < keep; ++i) {
-      auto& mutable_kv = const_cast<MapPair&>(*tmp[i]);
+      auto& mutable_kv = const_cast<MapPair&>(*tmp[i].kv);
       new_data.emplace(std::move(mutable_kv.first), mutable_kv.second);
     }
     data_ = std::move(new_data);
@@ -194,8 +189,7 @@ class BoundedPriorityQueue {
 }  // namespace
 
 TrainerModel::TrainerModel(const TrainerSpec& trainer_spec,
-                           const NormalizerSpec& normalizer_spec)
-    : trainer_spec_(trainer_spec), normalizer_spec_(normalizer_spec) {}
+                           const NormalizerSpec& normalizer_spec) {}
 
 TrainerModel::~TrainerModel() {}
 
@@ -214,7 +208,7 @@ absl::Status TrainerModel::SetSentencePieces(SentencePieces&& sentencepieces) {
   for (size_t i = 0; i < sentencepieces_.size(); ++i) {
     const absl::string_view w = sentencepieces_[i].first;  // piece
     const float score = sentencepieces_[i].second;         // score.
-    RET_CHECK(!std::isnan(score));
+    RET_CHECK(std::isfinite(score));
     pieces.emplace_back(w, i);
     min_score_ = std::min(min_score_, score);
     auto* piece = model_proto_data_.add_pieces();
@@ -253,8 +247,10 @@ TrainerModel::SentencePieces Trainer::LoadSeedSentencePiecesFromFile(
     const absl::flat_hash_map<std::string, int64_t>& all_chars) {
   // all_chars must be included in the seed sentencepieces.
   TrainerModel::SentencePieces seed_sentencepieces;
+  absl::flat_hash_set<std::string> seen_pieces;
   for (const auto& it : Sorted(all_chars)) {
     seed_sentencepieces.emplace_back(it);
+    seen_pieces.insert(it.first);
   }
 
   auto seed_sentencepieces_file = sentencepiece::filesystem::NewReadableFile(
@@ -269,12 +265,13 @@ TrainerModel::SentencePieces Trainer::LoadSeedSentencePiecesFromFile(
       return {};
     }
     const auto& seed_sentencepiece = fields[0];
-    if (!absl::SimpleAtoi(fields[1], &freq)) {
+    if (!absl::SimpleAtoi(fields[1], &freq) || freq <= 0) {
       LOG(ERROR) << "Could not parse the frequency; line: " << line;
       return {};
     }
     const UnicodeText uw = string_util::UTF8ToUnicodeText(seed_sentencepiece);
-    if (!IsValidSentencePiece(uw)) {
+    if (!IsValidSentencePiece(uw) ||
+        !seen_pieces.insert(seed_sentencepiece).second) {
       ++skipped_sentencepieces;
       continue;
     }
@@ -324,9 +321,9 @@ TrainerModel::SentencePieces Trainer::MakeSeedSentencePiecesFromCorpus(
   }
 
   constexpr size_t kMaxChunkBytes = 500 * 1024 * 1024;  // 500 MB per chunk
-  const int num_threads = trainer_spec_.num_threads();
 
 #if defined(LIBSAIS_OPENMP)
+  const int num_threads = trainer_spec_.num_threads();
   LOG(INFO) << "Extracting seed sentencepieces (libsais_omp, " << num_threads
             << " threads)";
 #else
@@ -347,7 +344,8 @@ TrainerModel::SentencePieces Trainer::MakeSeedSentencePiecesFromCorpus(
     while (sentence_idx < sentences_.size() &&
            chunk_bytes.size() < kMaxChunkBytes) {
       const auto& w = sentences_[sentence_idx++];
-      for (int i = 0; i < w.second; ++i) {
+      for (int64_t i = 0; i < w.second && chunk_bytes.size() < kMaxChunkBytes;
+           ++i) {
         chunk_bytes.append(w.first);
         chunk_bytes.push_back('\0');  // Sentence boundary delimiter
       }
@@ -418,7 +416,6 @@ TrainerModel::SentencePieces Trainer::MakeSeedSentencePiecesFromCorpus(
     stack.push_back({0, 0});
 
     int64_t node_num = 0;
-    int64_t valid_maximal_nodes = 0;
 
     for (int32_t i = 1; i <= n32; ++i) {
       int32_t lcp_val = (i < n32) ? LCP32[i] : 0;
@@ -482,7 +479,6 @@ TrainerModel::SentencePieces Trainer::MakeSeedSentencePiecesFromCorpus(
             return;
           }
 
-          valid_maximal_nodes++;
           queue.Add(piece, freq);
         };
         process_interval();
@@ -750,7 +746,7 @@ TrainerModel::SentencePieces Trainer::PruneUnreachableSentencePieces(
       }
     }
 
-    CHECK(self_node);
+    if (!self_node) continue;
     const float original_score = self_node->score;
 
     // Temporarily disable the self_node to force Viterbi to find an alternative
@@ -809,7 +805,7 @@ TrainerModel::SentencePieces Trainer::FinalizeSentencePieces(
   }
 
   const int vocab_size_size = trainer_spec_.vocab_size() - meta_pieces_.size();
-  CHECK_GT(vocab_size_size, 0);
+  if (vocab_size_size <= 0) return {};
 
   // Then keeps sentencepieces with higher scores.
   for (const auto& w : Sorted(sentencepieces)) {
@@ -835,12 +831,11 @@ absl::Status Trainer::Train() {
 
   ABSL_RETURN_IF_ERROR(model.status());
   ABSL_RETURN_IF_ERROR(LoadSentences());
+  // Note: Prerequisites for auto_character_coverage (e.g.,
+  // --use_sparse_pruning=true and --byte_fallback=true) are already validated
+  // in VerifySpec() during TrainerInterface initialization / LoadSentences().
   if (!trainer_spec_.auto_character_coverage()) {
     RET_CHECK(!required_chars_.empty());
-  } else {
-    RET_CHECK(absl::GetFlag(FLAGS_use_sparse_pruning))
-        << "--auto_character_coverage in UNIGRAM mode requires "
-           "--use_sparse_pruning=true.";
   }
 
   auto seed_sentencepieces = MakeSeedSentencePieces();
@@ -868,11 +863,18 @@ absl::Status Trainer::Train() {
   return Save();
 }
 
-absl::Status Trainer::TrainDiscretePruning(TrainerModel* model) {
+namespace {
+int64_t ComputeTotalCorpusBytes(const TrainerInterface::Sentences& sentences) {
   int64_t total_corpus_bytes = 0;
-  for (const auto& w : sentences_) {
+  for (const auto& w : sentences) {
     total_corpus_bytes += w.first.size() * w.second;
   }
+  return total_corpus_bytes;
+}
+}  // namespace
+
+absl::Status Trainer::TrainDiscretePruning(TrainerModel* model) {
+  const int64_t total_corpus_bytes = ComputeTotalCorpusBytes(sentences_);
   auto calc_bytes_per_tok = [&](int64_t tokens) -> float {
     return (tokens > 0) ? static_cast<float>(total_corpus_bytes) / tokens
                         : 0.0f;
@@ -912,10 +914,7 @@ absl::Status Trainer::TrainDiscretePruning(TrainerModel* model) {
 }
 
 absl::Status Trainer::TrainSparsePruning(TrainerModel* model) {
-  int64_t total_corpus_bytes = 0;
-  for (const auto& w : sentences_) {
-    total_corpus_bytes += w.first.size() * w.second;
-  }
+  const int64_t total_corpus_bytes = ComputeTotalCorpusBytes(sentences_);
   auto calc_bytes_per_tok = [&](int64_t tokens) -> float {
     return (tokens > 0) ? static_cast<float>(total_corpus_bytes) / tokens
                         : 0.0f;

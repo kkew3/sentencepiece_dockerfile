@@ -107,13 +107,11 @@ cc_library(
         "@darts-clone//:darts-clone",
         "@com_google_absl//absl/base:core_headers",
         "@com_google_absl//absl/base:no_destructor",
-        "@com_google_absl//absl/cleanup",
         "@com_google_absl//absl/container:flat_hash_map",
         "@com_google_absl//absl/container:flat_hash_set",
         "@com_google_absl//absl/flags:flag",
         "@com_google_absl//absl/flags:parse",
         "@com_google_absl//absl/flags:usage",
-        "@com_google_absl//absl/functional:any_invocable",
         "@com_google_absl//absl/log",
         "@com_google_absl//absl/log:check",
         "@com_google_absl//absl/log:flags",
@@ -211,7 +209,6 @@ cc_binary(
     visibility = ["//visibility:public"],
     deps = [
         ":sentencepiece_processor",
-        ":sentencepiece_trainer",
         "@com_google_absl//absl/flags:flag",
         "@com_google_absl//absl/flags:parse",
     ],
@@ -269,7 +266,6 @@ cc_binary(
     visibility = ["//visibility:public"],
     deps = [
         ":sentencepiece_processor",
-        ":sentencepiece_trainer",
         "@com_google_absl//absl/flags:flag",
         "@com_google_absl//absl/flags:parse",
     ],
@@ -278,6 +274,7 @@ cc_binary(
 cc_binary(
     name = "compile_charsmap",
     srcs = ["compile_charsmap_main.cc"],
+    tags = ["manual"],
     visibility = ["//visibility:public"],
     deps = [
         ":sentencepiece_processor",

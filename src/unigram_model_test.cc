@@ -176,6 +176,34 @@ TEST(LatticeTest, ViterbiFromIncompleteLatticeTest) {
   lattice.Viterbi();
 }
 
+TEST(LatticeTest, InvalidNodeTest) {
+  Lattice lattice;
+  lattice.SetSentence("ABC");
+  EXPECT_EQ(lattice.Insert(0, 0), nullptr);
+  EXPECT_EQ(lattice.Insert(0, -1), nullptr);
+  EXPECT_EQ(lattice.Insert(-1, 1), nullptr);
+  EXPECT_EQ(lattice.Insert(0, 4), nullptr);
+  EXPECT_EQ(lattice.Insert(2, 2), nullptr);
+
+  auto* n0 = lattice.Insert(0, 1);
+  auto* n1 = lattice.Insert(1, 1);
+  auto* n2 = lattice.Insert(2, 1);
+  ASSERT_NE(n0, nullptr);
+  ASSERT_NE(n1, nullptr);
+  ASSERT_NE(n2, nullptr);
+  n0->score = 1.0f;
+  n1->score = 1.0f;
+  n2->score = 1.0f;
+  EXPECT_EQ(lattice.Viterbi().first.size(), 3);
+}
+
+TEST(LatticeTest, EmptySentenceTest) {
+  Lattice lattice;
+  lattice.SetSentence("");
+  EXPECT_TRUE(lattice.Viterbi().first.empty());
+  EXPECT_TRUE(lattice.Sample(1.0).empty());
+}
+
 std::string GetTokenized(const std::vector<Lattice::Node*>& nodes) {
   std::vector<std::string> tokens;
   for (auto* node : nodes) {
@@ -241,6 +269,7 @@ TEST(LatticeTest, NBestTest) {
 }
 
 TEST(LatticeTest, NBestSampleTest) {
+  SetRandomGeneratorSeed(0);
   Lattice lattice;
   lattice.SetSentence("ABC");
 
@@ -394,6 +423,7 @@ TEST(LatticeTest, PopulateMarginalTest) {
 }
 
 TEST(LatticeTest, SampleTest) {
+  SetRandomGeneratorSeed(0);
   Lattice lattice;
   lattice.SetSentence("ABC");
 
@@ -682,7 +712,22 @@ TEST(UnigramModelTest, ModelNBestTimeoutTest) {
   sentencepiece::SetNBestTimeout(1);  // 1 ms
   nbest = model.NBestEncode(long_input, 100);
   EXPECT_EQ(1, nbest.size());  // fallback to viterbi.
+
+  // Regression test for issue #1347:
+  // A long unary prefix ("x" repeated) followed by a short ambiguous suffix
+  // with tied scores where agenda shrinks once at >= 10000 and then stays
+  // below 10000 while marching through the unary prefix.
+  ModelProto tied_proto = MakeBaseModelProto();
+  AddPiece(&tied_proto, "a", 0.0);
+  AddPiece(&tied_proto, "aa", 0.0);
+  AddPiece(&tied_proto, "x", 0.0);
+  Model tied_model(tied_proto);
+
+  std::string unary_plus_ambiguous(10000, 'x');
+  unary_plus_ambiguous.append(35, 'a');
   sentencepiece::SetNBestTimeout(original_timeout);
+  nbest = tied_model.NBestEncode(unary_plus_ambiguous, 2);
+  EXPECT_GE(nbest.size(), 1);
 }
 
 TEST(UnigramModelTest, EncodeTest) {

@@ -120,7 +120,6 @@ class DoubleArray {
   }
 
   bool has_array() const { return array_ != nullptr; }
-  const uint32_t* array() const { return array_; }
 
   // Returns the value associated with `key`, or -1 if not found.
   int exact_lookup(std::string_view key) const {
@@ -202,14 +201,6 @@ class DoubleArray {
 
   View view() const { return View{array_}; }
 
-  uint32_t transition(uint32_t node_pos, std::string_view key) const {
-    return view().transition(node_pos, key);
-  }
-
-  int leaf_value(uint32_t node_pos) const {
-    return view().leaf_value(node_pos);
-  }
-
   // SECURITY CRITICAL: Runtime trie traversals omit per-step bounds checks for
   // performance. This method guarantees memory safety by verifying ahead of
   // time that for every node `i`, all 256 byte transitions `(i ^ offset) ^ c`,
@@ -275,7 +266,8 @@ StatusCode InitializeTrie(const uint8_t* data, size_t size, int max_value_limit,
   if (data == nullptr || size == 0) {
     return is_optional ? StatusCode::kOk : StatusCode::kInternal;
   }
-  if (size < 1024 || (size & 0x3FF) != 0) {
+  if (size < 1024 || (size & 0x3FF) != 0 ||
+      (reinterpret_cast<uintptr_t>(data) % alignof(uint32_t)) != 0) {
     return StatusCode::kInternal;
   }
   trie->set_array(data, size / sizeof(uint32_t));
@@ -615,7 +607,7 @@ class Normalizer {
 
     if (!trie_.has_array() && offset == nullptr) {
       if (utf8::IsStructurallyValid(input)) {
-        NormalizeIdentityFast(input, space_symbol, &consumed, normalized);
+        NormalizeIdentityFast(input, space_symbol, normalized);
       } else {
         NormalizeGeneralCore(input, space_symbol, &consumed, normalized,
                              /*offset=*/nullptr);
@@ -656,7 +648,7 @@ class Normalizer {
   // Fast path for identity normalization without offsets (empty compiled map),
   // using 64-bit SWAR / SIMD memchr and batched appends.
   void NormalizeIdentityFast(std::string_view input,
-                             std::string_view space_symbol, size_t* consumed,
+                             std::string_view space_symbol,
                              std::string* normalized) const {
     bool is_prev_space = remove_extra_whitespaces_;
     StringScanner scanner(input);
@@ -664,7 +656,6 @@ class Normalizer {
       const std::string_view chunk = scanner.ConsumeUntil(' ');
       if (!chunk.empty()) {
         normalized->append(chunk.data(), chunk.size());
-        *consumed += chunk.size();
         is_prev_space = false;
       }
 
@@ -684,7 +675,6 @@ class Normalizer {
         }
         is_prev_space = false;
       }
-      *consumed += space_count;
     }
   }
 
@@ -810,8 +800,15 @@ class Model {
 
   int PieceToId(std::string_view piece) const;
   std::string_view IdToPiece(int id) const;
-  float GetScore(int id) const { return scores_[id]; }
-  int32_t GetIntScore(int id) const { return int_scores_[id]; }
+  // FlatBuffers stores scalar values in little-endian wire format. When reading
+  // through raw pointers (scores_ / int_scores_), EndianScalar byte-swaps the
+  // values on big-endian hosts while remaining a no-op on little-endian hosts.
+  float GetScore(int id) const {
+    return flatbuffers::EndianScalar(scores_[id]);
+  }
+  int32_t GetIntScore(int id) const {
+    return flatbuffers::EndianScalar(int_scores_[id]);
+  }
   bool IsUnknown(int id) const { return types_[id] == PieceType_UNKNOWN; }
   bool IsControl(int id) const { return types_[id] == PieceType_CONTROL; }
   bool IsByte(int id) const { return types_[id] == PieceType_BYTE; }
@@ -842,15 +839,10 @@ class Model {
   }
   std::string_view unk_surface() const;
 
-  bool ByteFallbackEnabled() const { return byte_fallback_start_id_ != -1; }
   bool add_dummy_prefix() const { return add_dummy_prefix_; }
 
   bool has_normalizer_spec() const {
     return model_proto_->normalizer_spec() != nullptr;
-  }
-
-  bool treat_whitespace_as_suffix() const {
-    return treat_whitespace_as_suffix_;
   }
 
   bool remove_extra_whitespaces() const {
@@ -861,26 +853,18 @@ class Model {
     return has_non_leading_space_symbol_;
   }
 
-  const ModelProto& model_proto() const { return *model_proto_; }
-
-  bool has_direct_mappings() const {
-    return model_proto_->has_direct_mappings();
-  }
-
   // Returns true if `id` is guaranteed to encode as a single standalone token
   // when appearing as an isolated pre-split chunk, bypassing BPE merges.
   bool IsDirectMapping(int id) const {
     if (id >= vocab_size() || IsInvisible(id)) return false;
+    if (!model_proto_->has_direct_mappings()) return false;
     const auto* vector = model_proto_->is_direct_mapping();
     if (vector == nullptr) {
-      return model_proto_->has_direct_mappings();
+      return true;
     }
     return vector->Get(id) != 0;
   }
 
-  bool has_non_null_vector() const {
-    return model_proto_->is_direct_mapping() != nullptr;
-  }
   void SetScoreResetThresholdForTesting(float threshold) {
     score_reset_threshold_ = threshold;
   }
@@ -963,7 +947,6 @@ class Model {
   int eos_id_ = -1;
   int pad_id_ = -1;
   bool add_dummy_prefix_ = true;
-  bool treat_whitespace_as_suffix_ = false;
   bool has_non_leading_space_symbol_ = false;
   float unk_score_ = 0.0;
   ModelType model_type_ = ModelType_UNIGRAM;
@@ -1033,13 +1016,10 @@ StatusCode Model::Initialize(std::string_view model_buffer) {
 
   if (has_normalizer_spec()) {
     add_dummy_prefix_ = model_proto_->normalizer_spec()->add_dummy_prefix();
-    treat_whitespace_as_suffix_ =
-        model_proto_->normalizer_spec()->treat_whitespace_as_suffix();
     LITE_RETURN_IF_ERROR(
         normalizer_.Initialize(model_proto_->normalizer_spec()));
   } else {
     add_dummy_prefix_ = true;
-    treat_whitespace_as_suffix_ = false;
   }
 
   model_type_ = model_proto_->model_type();
@@ -1073,16 +1053,12 @@ StatusCode Model::Initialize(std::string_view model_buffer) {
         model_proto_->int_scores()->size() != vocab_size) {
       return StatusCode::kInternal;
     }
+    int_scores_ = model_proto_->int_scores()->data();
   } else {
     if (model_proto_->scores() == nullptr ||
         model_proto_->scores()->size() != vocab_size) {
       return StatusCode::kInternal;
     }
-  }
-
-  if (model_type_ == ModelType_BPE) {
-    int_scores_ = model_proto_->int_scores()->data();
-  } else {
     scores_ = model_proto_->scores()->data();
   }
 
@@ -1092,8 +1068,7 @@ StatusCode Model::Initialize(std::string_view model_buffer) {
   }
   types_ = model_proto_->types()->data();
 
-  if (model_proto_->has_direct_mappings() &&
-      model_proto_->is_direct_mapping() != nullptr &&
+  if (model_proto_->is_direct_mapping() != nullptr &&
       model_proto_->is_direct_mapping()->size() != vocab_size) {
     return StatusCode::kInternal;
   }
@@ -1150,12 +1125,13 @@ StatusCode Model::Initialize(std::string_view model_buffer) {
   const std::string first_byte_piece = ByteToPiece(0);
   const int first_byte_id = pieces_trie_.exact_lookup(first_byte_piece);
 
-  if (first_byte_id >= 0 && first_byte_id < static_cast<int>(vocab_size)) {
+  if (first_byte_id >= 0 && first_byte_id < static_cast<int>(vocab_size) &&
+      IsByte(first_byte_id)) {
     byte_fallback_start_id_ = first_byte_id;
     for (int i = 0; i < 256; ++i) {
       const std::string piece = ByteToPiece(i);
       const int id = pieces_trie_.exact_lookup(piece);
-      if (id == -1 || id != byte_fallback_start_id_ + i) {
+      if (id == -1 || id != byte_fallback_start_id_ + i || !IsByte(id)) {
         return StatusCode::kInternal;
       }
       byte_to_id_[i] = id;
@@ -1180,7 +1156,8 @@ std::string_view Model::unk_surface() const {
 }
 
 int Model::PieceToId(std::string_view piece) const {
-  return pieces_trie_.exact_lookup(piece);
+  const int id = pieces_trie_.exact_lookup(piece);
+  return id == -1 ? unk_id_ : id;
 }
 
 std::string_view Model::IdToPiece(int id) const {
@@ -1196,7 +1173,8 @@ void Model::EncodeChunk(std::string_view chunk, std::vector<int>* ids,
     // O(L) direct mapping shortcut for isolated chunks guaranteed to encode as
     // a single token.
     if (uniform_sampler == nullptr) {
-      if (const int id = PieceToId(chunk); IsDirectMapping(id)) {
+      if (const int id = pieces_trie_.exact_lookup(chunk);
+          IsDirectMapping(id)) {
         ids->push_back(id);
         if (pieces != nullptr) {
           pieces->push_back(chunk);
@@ -1234,14 +1212,6 @@ void Model::Encode(std::string_view normalized, std::vector<int>* ids,
 StatusCode Model::Normalize(std::string_view input, std::string* normalized,
                             std::vector<size_t>* offset) const {
   if (status_ != StatusCode::kOk) return status_;
-  if (!has_normalizer_spec()) {
-    normalized->assign(input.data(), input.size());
-    if (offset != nullptr) {
-      offset->resize(input.size() + 1);
-      std::iota(offset->begin(), offset->end(), 0);
-    }
-    return StatusCode::kOk;
-  }
   return normalizer_.Normalize(input, normalized, offset);
 }
 
@@ -1337,7 +1307,7 @@ void Model::EncodeUnigram(std::string_view normalized, std::vector<int>* ids,
 
   const int size = normalized.size();
   const float unk_penalty_score = unk_score();
-  std::vector<BestPathNode> best_path_ends_at(size + 1);
+  InlineVector<BestPathNode, 128> best_path_ends_at(size + 1);
   int starts_at = 0;
   // Re-center accumulated Viterbi scores when exceeding +/-kScoreResetThreshold
   // to prevent float32 significand precision loss on long inputs.
@@ -1347,8 +1317,9 @@ void Model::EncodeUnigram(std::string_view normalized, std::vector<int>* ids,
   while (starts_at < size) {
     float best_path_score_till_here =
         best_path_ends_at[starts_at].best_path_score;
-    if (best_path_score_till_here < -kScoreResetThreshold ||
-        best_path_score_till_here > kScoreResetThreshold) {
+    if (std::isfinite(best_path_score_till_here) &&
+        (best_path_score_till_here < -kScoreResetThreshold ||
+         best_path_score_till_here > kScoreResetThreshold)) {
       const float offset = best_path_score_till_here;
       for (int i = starts_at; i <= max_frontier; ++i) {
         if (i == starts_at || best_path_ends_at[i].starts_at != -1) {
@@ -1702,6 +1673,9 @@ StatusCode SentencePieceLiteProcessor::PretokenizeAtSafeBoundaries(
   if (model_ == nullptr) {
     return StatusCode::kFailedPrecondition;
   }
+  if (normalized.size() > kMaxInputLength) {
+    return StatusCode::kInvalidArgument;
+  }
   return model_->PretokenizeAtSafeBoundaries(normalized, receiver);
 }
 
@@ -1736,8 +1710,8 @@ StatusCode SentencePieceLiteProcessor::Decode(
   InlineVector<unsigned char, 64> accumulated_bytes;
   size_t first_byte_index = 0;
 
-  auto flush_bytes = [&]() -> StatusCode {
-    if (accumulated_bytes.empty()) return StatusCode::kOk;
+  auto flush_bytes = [&]() {
+    if (accumulated_bytes.empty()) return;
     size_t offset = 0;
     while (offset < accumulated_bytes.size()) {
       std::string_view bytes_view(
@@ -1769,7 +1743,6 @@ StatusCode SentencePieceLiteProcessor::Decode(
       offset += consumed;
     }
     accumulated_bytes.clear();
-    return StatusCode::kOk;
   };
 
   bool is_bos_ws = true;
@@ -1782,10 +1755,14 @@ StatusCode SentencePieceLiteProcessor::Decode(
   for (size_t i = 0; i < ids.size(); ++i) {
     const int id = ids[i];
     if (id < 0 || id >= vocab_size) {
+      output->clear();
+      if (pieces != nullptr) {
+        pieces->clear();
+      }
       return StatusCode::kOutOfRange;
     }
     if (model_->IsUnknown(id)) {
-      LITE_RETURN_IF_ERROR(flush_bytes());
+      flush_bytes();
       const size_t begin_pos = output->size();
       output->append(model_->unk_surface());
       set_offset(i, begin_pos, output->size());
@@ -1799,7 +1776,7 @@ StatusCode SentencePieceLiteProcessor::Decode(
       }
       accumulated_bytes.push_back(static_cast<unsigned char>(byte));
     } else {
-      LITE_RETURN_IF_ERROR(flush_bytes());
+      flush_bytes();
 
       if (model_->IsControl(id)) {
         set_offset(i, output->size(), output->size());
@@ -1841,7 +1818,7 @@ StatusCode SentencePieceLiteProcessor::Decode(
     }
   }
 
-  LITE_RETURN_IF_ERROR(flush_bytes());
+  flush_bytes();
 
   if (pieces != nullptr) {
     // TRICKY: In-place convert stored integer byte offsets to valid memory
@@ -1897,11 +1874,6 @@ int SentencePieceLiteProcessor::pad_id() const {
 int SentencePieceLiteProcessor::piece_type(int id) const {
   if (model_ == nullptr || id < 0 || id >= model_->vocab_size()) return -1;
   return model_->piece_type(id);
-}
-
-bool SentencePieceLiteProcessor::HasNonNullDirectMappingVectorForTesting()
-    const {
-  return model_ != nullptr && model_->has_non_null_vector();
 }
 
 void SentencePieceLiteProcessor::SetScoreResetThresholdForTesting(

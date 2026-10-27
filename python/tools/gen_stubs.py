@@ -16,9 +16,10 @@
 """Generates ``sentencepiece/__init__.pyi`` from the imported package.
 
 The public Python surface of ``sentencepiece`` is assembled at *import time*
-in ``sentencepiece.i`` (``setattr``, ``_add_snake_case``, ``Tokenize = Encode``
-etc.), so a static parse of the source cannot see it. This script therefore
-imports the built package and introspects the live classes/functions.
+in ``sentencepiece/__init__.py`` (``setattr``, ``_add_snake_case``,
+``Tokenize = Encode``, etc.), so a static parse of the source cannot see it.
+This script therefore imports the built package and introspects the live
+classes/functions.
 
 Two pieces of information are combined:
 
@@ -65,15 +66,9 @@ _MODULE_NAME = "sentencepiece"
 # Dunder methods worth keeping in the stub. All other dunders are skipped.
 ALLOWED_DUNDERS = {"__init__", "__len__", "__getitem__"}
 
-# Class-level attributes that are SWIG/runtime noise.
-SKIP_MEMBERS = {"thisown"}
-
 # Order in which classes are emitted. Discovered classes not listed here are
 # appended afterwards (sorted), so new public classes still show up.
 CLASS_ORDER = [
-    "ImmutableSentencePieceText_ImmutableSentencePiece",
-    "ImmutableSentencePieceText",
-    "ImmutableNBestSentencePieceText",
     "ThreadPool",
     "SentencePieceProcessor",
     "SentencePieceTrainer",
@@ -93,7 +88,8 @@ _ENCODE = (
     "add_bos: bool | None = ..., add_eos: bool | None = ..., reverse: bool | None = ..., "
     "emit_unk_piece: bool | None = ..., enable_sampling: bool | None = ..., "
     "nbest_size: int | None = ..., alpha: float | None = ..., num_threads: int | None = ..., "
-    "thread_pool: ThreadPool | None = ..., out_type: _OutType | None = ...) -> Any"
+    "thread_pool: ThreadPool | None = ..., out_type: _OutType | None = ..., "
+    "return_bytes: bool | None = ...) -> Any"
 )
 _PARALLEL_ENCODE = (
     "(self, input: str | bytes | Sequence[str] | Sequence[bytes], return_type: _OutType | None = ..., "
@@ -130,14 +126,6 @@ _DECODE_IDS = (
     "(self, input: int | Sequence[int] | Sequence[Sequence[int]], "
     "return_type: _DecodeOutType = ..., out_type: _DecodeOutType = ..., **kwargs: Any) -> Any"
 )
-_DECODE_PIECES_SER = (
-    "(self, input: str | bytes | Sequence[str] | Sequence[bytes] | Sequence[Sequence[str]] | Sequence[Sequence[bytes]], "
-    "return_type: Literal[\"serialized_proto\"] = ..., out_type: Literal[\"serialized_proto\"] = ..., **kwargs: Any) -> Any"
-)
-_DECODE_IDS_SER = (
-    "(self, input: int | Sequence[int] | Sequence[Sequence[int]], "
-    "return_type: Literal[\"serialized_proto\"] = ..., out_type: Literal[\"serialized_proto\"] = ..., **kwargs: Any) -> Any"
-)
 _DECODE_PIECES_PROTO = (
     "(self, input: str | bytes | Sequence[str] | Sequence[bytes] | Sequence[Sequence[str]] | Sequence[Sequence[bytes]], "
     "**kwargs: Any) -> Any"
@@ -150,8 +138,8 @@ _NORMALIZER_INIT = (
     "normalizer_spec: bytes | None = ..., "
     "rule_tsv: str | None = ..., rule_name: str | None = ..., "
     "norm_map: Sequence[tuple[str, str]] | None = ..., "
-    "add_dummy_prefix: bool = ..., "
-    "escape_whitespaces: bool = ..., remove_extra_whitespaces: bool = ...) -> None"
+    "add_dummy_prefix: bool | None = ..., "
+    "escape_whitespaces: bool | None = ..., remove_extra_whitespaces: bool | None = ...) -> None"
 )
 _NORMALIZE = "(self, input: str | bytes | Sequence[str] | Sequence[bytes], with_offsets: bool | None = ...) -> Any"
 
@@ -161,12 +149,9 @@ _NORMALIZE = "(self, input: str | bytes | Sequence[str] | Sequence[bytes], with_
 METHOD_SIGS = {
     "SentencePieceProcessor": {
         "__init__": _SPP_INIT,
-        "Init": _SPP_INIT,
         "Load": "(self, model_file: str | None = ..., model_proto: bytes | None = ...) -> bool",
         "LoadFromFile": "(self, arg: str) -> bool",
         "LoadFromSerializedProto": "(self, serialized: bytes) -> bool",
-        "SetEncodeExtraOptions": "(self, extra_option: str) -> bool",
-        "SetDecodeExtraOptions": "(self, extra_option: str) -> bool",
 
         "serialized_model_proto": "(self) -> bytes",
         "GetPieceSize": "(self) -> int",
@@ -209,7 +194,6 @@ METHOD_SIGS = {
         "EncodeAsPieces": _INPUT_KWARGS,
         "EncodeAsIds": _INPUT_KWARGS,
         "EncodeAsNumpy": _INPUT_KWARGS,
-
         "EncodeAsProto": _INPUT_KWARGS,
         "EncodeAsOffsetMapping": _INPUT_KWARGS,
 
@@ -217,27 +201,22 @@ METHOD_SIGS = {
         "ParallelEncodeAsPieces": _INPUT_KWARGS,
         "ParallelEncodeAsIds": _INPUT_KWARGS,
         "ParallelEncodeAsNumpy": _INPUT_KWARGS,
-
         "ParallelEncodeAsProto": _INPUT_KWARGS,
 
         "SampleEncodeAsPieces": _SAMPLE_AS,
         "SampleEncodeAsIds": _SAMPLE_AS,
         "SampleEncodeAsNumpy": _SAMPLE_AS,
-
         "SampleEncodeAsProto": _SAMPLE_AS,
 
         "NBestEncode": _NBEST,
         "NBestEncodeAsPieces": _NBEST_AS,
         "NBestEncodeAsIds": _NBEST_AS,
         "NBestEncodeAsNumpy": _NBEST_AS,
-
         "NBestEncodeAsProto": _NBEST_AS,
-
 
         "Decode": _DECODE,
         "DecodePieces": _DECODE_PIECES,
         "DecodeIds": _DECODE_IDS,
-
         "DecodePiecesAsProto": _DECODE_PIECES_PROTO,
         "DecodeIdsAsProto": _DECODE_IDS_PROTO,
 
@@ -258,13 +237,6 @@ METHOD_SIGS = {
     },
     "SentencePieceNormalizer": {
         "__init__": _NORMALIZER_INIT,
-        "Init": _NORMALIZER_INIT,
-        "LoadFromSerializedProto": "(self, serialized: bytes) -> bool",
-        "LoadFromSerializedNormalizerSpec": "(self, serialized: bytes) -> bool",
-        "LoadFromRuleTSV": "(self, filename: str) -> bool",
-        "LoadFromRuleName": "(self, name: str) -> bool",
-        "LoadFromFile": "(self, arg: str) -> bool",
-        "LoadFromMap": "(self, norm_map: Sequence[tuple[str, str]]) -> bool",
         "Decompile": "(self) -> list[tuple[str, str]]",
         "serialized_model_proto": "(self) -> bytes",
         "serialized_normalizer_spec": "(self) -> bytes",
@@ -274,41 +246,22 @@ METHOD_SIGS = {
         "__init__": "(self, num_threads: int) -> None",
         "num_threads": "(self) -> int",
     },
-    "ImmutableSentencePieceText": {
-        "SerializeAsString": "(self) -> bytes",
-    },
-    "ImmutableNBestSentencePieceText": {
-        "SerializeAsString": "(self) -> bytes",
-    },
 }
 
 # Property return types, keyed by class name then property name.
-PROPERTY_TYPES = {
-    "ImmutableSentencePieceText_ImmutableSentencePiece": {
-        "piece": "str",
-        "piece_as_bytes": "bytes",
-        "surface": "str",
-        "surface_as_bytes": "bytes",
-        "id": "int",
-        "begin": "int",
-        "end": "int",
-    },
-    "ImmutableSentencePieceText": {
-        "text": "str",
-        "text_as_bytes": "bytes",
-        "score": "float",
-        "pieces": "Sequence[ImmutableSentencePieceText_ImmutableSentencePiece]",
-    },
-    "ImmutableNBestSentencePieceText": {
-        "nbests": "Sequence[ImmutableSentencePieceText]",
-    },
-}
+PROPERTY_TYPES: dict[str, dict[str, str]] = {}
 
 # Methods that are static (no ``self``).
 STATIC_METHODS = {("SentencePieceTrainer", "Train")}
 
 # Module-level free functions.
 FUNCTION_SIGS = {
+    "ConvertToFlatbuffer": (
+        "(model_file: str | None = ..., model_proto: Any | bytes | None = ..., "
+        "serialized_model_proto: bytes | None = ..., output_file: str | None = ..., "
+        "skip_char_bigrams: bool = ..., treat_null_byte_as_unused: bool = ..., "
+        "allow_unsupported_model_type: bool = ...) -> bytes | None"
+    ),
     "SetRandomGeneratorSeed": "(seed: int) -> None",
     "SetMinLogLevel": "(v: int) -> None",
     "SetNBestTimeout": "(timeout_ms: int) -> None",
@@ -355,8 +308,6 @@ def public_members(cls):
   """Public (and selected dunder) member names of a class, deduped/sorted."""
   members = set()
   for name in dir(cls):
-    if name in SKIP_MEMBERS:
-      continue
     if name.startswith("__"):
       if name not in ALLOWED_DUNDERS:
         continue

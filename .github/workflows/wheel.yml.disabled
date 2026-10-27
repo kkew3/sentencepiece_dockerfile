@@ -17,9 +17,11 @@ permissions:
 jobs:
   build_wheels:
     outputs:
-      digests-linux: ${{ steps.hash-linux.outputs.digests }}
+      digests-linux-x64: ${{ steps.hash-linux-x64.outputs.digests }}
+      digests-linux-arm64: ${{ steps.hash-linux-arm64.outputs.digests }}
       digests-macos: ${{ steps.hash-macos.outputs.digests }}
-      digests-windows: ${{ steps.hash-windows.outputs.digests }}
+      digests-windows-x64: ${{ steps.hash-windows-x64.outputs.digests }}
+      digests-windows-arm64: ${{ steps.hash-windows-arm64.outputs.digests }}
     strategy:
       fail-fast: false
       matrix:
@@ -72,7 +74,6 @@ jobs:
       - name: Install cibuildwheel
         working-directory: python
         run: |
-          python -m pip install --require-hashes --no-dependencies -r ../.github/workflows/requirements/base.txt
           python -m pip install --require-hashes --no-dependencies -r ../.github/workflows/requirements/cibuildwheel.txt
 
       - name: Build wheels
@@ -113,7 +114,7 @@ jobs:
       - name: Validate artifact
         run: |
           python -m pip install twine
-          twine check --strict python/wheelhouse/*
+          python -m twine check --strict python/wheelhouse/*
 
       - name: Upload artifact
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
@@ -135,18 +136,28 @@ jobs:
 
       - name: Generate SLSA subjects - Macos
         id: hash-macos
-        if: runner.os == 'macOS'
-        run: echo "digests=$(shasum -a 256 python/wheelhouse/* | base64)" >> $GITHUB_OUTPUT
+        if: matrix.os == 'macos-latest'
+        run: echo "digests=$(shasum -a 256 python/wheelhouse/* | base64)" >> "$GITHUB_OUTPUT"
 
-      - name: Generate SLSA subjects - Linux
-        id: hash-linux
-        if: runner.os == 'Linux'
-        run: echo "digests=$(sha256sum python/wheelhouse/* | base64 -w0)" >> $GITHUB_OUTPUT
+      - name: Generate SLSA subjects - Linux (x64)
+        id: hash-linux-x64
+        if: matrix.os == 'ubuntu-latest'
+        run: echo "digests=$(sha256sum python/wheelhouse/* | base64 -w0)" >> "$GITHUB_OUTPUT"
 
-      - name: Generate SLSA subjects - Windows
-        id: hash-windows
-        if: runner.os == 'Windows'
-        run: echo "digests=$(sha256sum python/wheelhouse/* | base64 -w0)" >> $GITHUB_OUTPUT
+      - name: Generate SLSA subjects - Linux (ARM64)
+        id: hash-linux-arm64
+        if: matrix.os == 'ubuntu-24.04-arm'
+        run: echo "digests=$(sha256sum python/wheelhouse/* | base64 -w0)" >> "$GITHUB_OUTPUT"
+
+      - name: Generate SLSA subjects - Windows (x64)
+        id: hash-windows-x64
+        if: matrix.os == 'windows-latest'
+        run: echo "digests=$(sha256sum python/wheelhouse/* | base64 -w0)" >> "$GITHUB_OUTPUT"
+
+      - name: Generate SLSA subjects - Windows (ARM64)
+        id: hash-windows-arm64
+        if: matrix.os == 'windows-11-arm'
+        run: echo "digests=$(sha256sum python/wheelhouse/* | base64 -w0)" >> "$GITHUB_OUTPUT"
 
   free-threading:
     needs: [build_wheels]
@@ -159,15 +170,17 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+          sparse-checkout-cone-mode: false
           sparse-checkout: |
             python/test
             python/tools
             data/botchan.txt
+            data/botchan_en_bpe_1000.model
+            data/botchan_en_unigram_1000.model
 
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: ${{ matrix.python-version }}
-          allow-prereleases: true
 
       - name: Download all artifacts
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
@@ -194,15 +207,19 @@ jobs:
       - name: Merge results
         id: hash
         env:
-          LINUX_DIGESTS: "${{ needs.build_wheels.outputs.digests-linux }}"
+          LINUX_X64_DIGESTS: "${{ needs.build_wheels.outputs.digests-linux-x64 }}"
+          LINUX_ARM64_DIGESTS: "${{ needs.build_wheels.outputs.digests-linux-arm64 }}"
           MACOS_DIGESTS: "${{ needs.build_wheels.outputs.digests-macos }}"
-          WINDOWS_DIGESTS: "${{ needs.build_wheels.outputs.digests-windows }}"
+          WINDOWS_X64_DIGESTS: "${{ needs.build_wheels.outputs.digests-windows-x64 }}"
+          WINDOWS_ARM64_DIGESTS: "${{ needs.build_wheels.outputs.digests-windows-arm64 }}"
         run: |
           set -euo pipefail
-          echo "$LINUX_DIGESTS" | base64 -d > checksums.txt
+          echo "$LINUX_X64_DIGESTS" | base64 -d > checksums.txt
+          echo "$LINUX_ARM64_DIGESTS" | base64 -d >> checksums.txt
           echo "$MACOS_DIGESTS" | base64 -d >> checksums.txt
-          echo "$WINDOWS_DIGESTS" | base64 -d >> checksums.txt
-          echo "digests=$(cat checksums.txt | base64 -w0)" >> $GITHUB_OUTPUT
+          echo "$WINDOWS_X64_DIGESTS" | base64 -d >> checksums.txt
+          echo "$WINDOWS_ARM64_DIGESTS" | base64 -d >> checksums.txt
+          echo "digests=$(base64 -w0 < checksums.txt)" >> "$GITHUB_OUTPUT"
 
   provenance:
     if: startsWith(github.ref, 'refs/tags/')
