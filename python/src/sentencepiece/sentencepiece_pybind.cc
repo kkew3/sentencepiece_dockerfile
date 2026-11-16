@@ -292,6 +292,7 @@ class PyListStringViewVector {
 
   absl::Span<const absl::string_view> views() const { return views_; }
   bool empty() const { return views_.empty(); }
+  size_t size() const { return views_.size(); }
   bool is_bytes() const { return is_bytes_; }
   absl::string_view operator[](size_t i) const { return views_[i]; }
 
@@ -511,9 +512,10 @@ std::vector<IntSpanOrVector> CastToVectorIntSpanOrVector(
     throw py::type_error(
         "Batch input must be a sequence of sequences or a 2D integer array.");
   }
+  const size_t n = seq.size();
   std::vector<IntSpanOrVector> outs;
-  outs.reserve(seq.size());
-  for (size_t i = 0; i < seq.size(); ++i) {
+  outs.reserve(n);
+  for (size_t i = 0; i < n; ++i) {
     outs.push_back(
         CastToIntSpanOrVector(py::reinterpret_borrow<py::object>(seq[i])));
   }
@@ -834,12 +836,15 @@ PYBIND11_MODULE(_sentencepiece, m, py::mod_gil_not_used()) {
               bool enable_sampling, int nbest_size, float alpha, bool add_bos,
               bool add_eos, bool reverse) {
              PyListStringViewVector C_ins(ins);
-             std::vector<std::vector<int>> outs(ins.size());
-             WorkerPool pool(num_threads, thread_pool, ins.size());
+             // Use the size of C_ins, not that of ins. The list may be
+             // modified by another thread once the GIL is released.
+             const size_t n = C_ins.size();
+             std::vector<std::vector<int>> outs(n);
+             WorkerPool pool(num_threads, thread_pool, n);
              {
                py::gil_scoped_release release;
                auto status = sentencepiece::RunBatch(
-                   ins.size(),
+                   n,
                    [&](size_t i) {
                      std::vector<int> out;
                      absl::Status s;
@@ -865,12 +870,15 @@ PYBIND11_MODULE(_sentencepiece, m, py::mod_gil_not_used()) {
               bool enable_sampling, int nbest_size, float alpha, bool add_bos,
               bool add_eos, bool reverse) {
              PyListStringViewVector C_ins(ins);
-             std::vector<std::vector<int>> temp_outs(ins.size());
-             WorkerPool pool(num_threads, thread_pool, ins.size());
+             // Use the size of C_ins, not that of ins. The list may be
+             // modified by another thread once the GIL is released.
+             const size_t n = C_ins.size();
+             std::vector<std::vector<int>> temp_outs(n);
+             WorkerPool pool(num_threads, thread_pool, n);
              {
                py::gil_scoped_release release;
                auto status = sentencepiece::RunBatch(
-                   ins.size(),
+                   n,
                    [&](size_t i) {
                      std::vector<int> out;
                      absl::Status s;
@@ -888,8 +896,8 @@ PYBIND11_MODULE(_sentencepiece, m, py::mod_gil_not_used()) {
                    *pool.get());
                if (!status.ok()) throw status;
              }
-             std::vector<VectorBuffer> outs(ins.size());
-             for (size_t i = 0; i < ins.size(); ++i) {
+             std::vector<VectorBuffer> outs(n);
+             for (size_t i = 0; i < n; ++i) {
                outs[i] = VectorBuffer(std::move(temp_outs[i]));
              }
              return outs;
@@ -902,12 +910,15 @@ PYBIND11_MODULE(_sentencepiece, m, py::mod_gil_not_used()) {
               bool return_bytes) {
              if (ins.empty()) return py::list();
              PyListStringViewVector C_ins(ins);
-             std::vector<std::vector<std::string>> outs(ins.size());
-             WorkerPool pool(num_threads, thread_pool, ins.size());
+             // Use the size of C_ins, not that of ins. The list may be
+             // modified by another thread once the GIL is released.
+             const size_t n = C_ins.size();
+             std::vector<std::vector<std::string>> outs(n);
+             WorkerPool pool(num_threads, thread_pool, n);
              {
                py::gil_scoped_release release;
                auto status = sentencepiece::RunBatch(
-                   ins.size(),
+                   n,
                    [&](size_t i) {
                      std::vector<std::string> out;
                      absl::Status s;
@@ -940,12 +951,15 @@ PYBIND11_MODULE(_sentencepiece, m, py::mod_gil_not_used()) {
              CheckProtoArgsThrowException(add_bos, add_eos, reverse,
                                           emit_unk_piece);
              PyListStringViewVector C_ins(ins);
-             std::vector<std::string> outs(ins.size());
-             WorkerPool pool(num_threads, thread_pool, ins.size());
+             // Use the size of C_ins, not that of ins. The list may be
+             // modified by another thread once the GIL is released.
+             const size_t n = C_ins.size();
+             std::vector<std::string> outs(n);
+             WorkerPool pool(num_threads, thread_pool, n);
              {
                py::gil_scoped_release release;
                auto status = sentencepiece::RunBatch(
-                   ins.size(),
+                   n,
                    [&](size_t i) {
                      sentencepiece::SentencePieceText spt;
                      absl::Status s;
@@ -976,12 +990,15 @@ PYBIND11_MODULE(_sentencepiece, m, py::mod_gil_not_used()) {
              CheckProtoArgsThrowException(add_bos, add_eos, reverse,
                                           emit_unk_piece);
              PyListStringViewVector C_ins(ins);
-             std::vector<sentencepiece::SentencePieceText> spts(ins.size());
-             WorkerPool pool(num_threads, thread_pool, ins.size());
+             // Use the size of C_ins, not that of ins. The list may be
+             // modified by another thread once the GIL is released.
+             const size_t n = C_ins.size();
+             std::vector<sentencepiece::SentencePieceText> spts(n);
+             WorkerPool pool(num_threads, thread_pool, n);
              {
                py::gil_scoped_release release;
                auto status = sentencepiece::RunBatch(
-                   ins.size(),
+                   n,
                    [&](size_t i) {
                      absl::Status s;
                      if (enable_sampling) {
@@ -997,8 +1014,8 @@ PYBIND11_MODULE(_sentencepiece, m, py::mod_gil_not_used()) {
                if (!status.ok()) throw status;
              }
 
-             py::list py_results(ins.size());
-             for (size_t batch_idx = 0; batch_idx < ins.size(); ++batch_idx) {
+             py::list py_results(n);
+             for (size_t batch_idx = 0; batch_idx < n; ++batch_idx) {
                py_results[batch_idx] = ExtractOffsetMapping(
                    spts[batch_idx], return_bytes, /*include_text=*/false);
              }
@@ -1216,7 +1233,10 @@ PYBIND11_MODULE(_sentencepiece, m, py::mod_gil_not_used()) {
           "_DecodePiecesBatch",
           [](const sentencepiece::SentencePieceProcessor& self,
              const py::sequence& ins, int num_threads, py::object thread_pool) {
-            if (ins.empty()) return py::list();
+            // Read the size once while holding the GIL. ins.size() calls
+            // __len__, which may run Python code and return a different value.
+            const size_t n = ins.size();
+            if (n == 0) return py::list();
 
             // Empty sequences (e.g. a sentence that encoded to no pieces) are
             // valid and decode to an empty string, so where they appear in the
@@ -1226,9 +1246,9 @@ PYBIND11_MODULE(_sentencepiece, m, py::mod_gil_not_used()) {
             bool is_bytes = false;
             bool found_non_empty = false;
             std::vector<PyListStringViewVector> C_ins_wrappers;
-            C_ins_wrappers.reserve(ins.size());
-            std::vector<absl::Span<const absl::string_view>> C_ins(ins.size());
-            for (size_t i = 0; i < ins.size(); ++i) {
+            C_ins_wrappers.reserve(n);
+            std::vector<absl::Span<const absl::string_view>> C_ins(n);
+            for (size_t i = 0; i < n; ++i) {
               C_ins_wrappers.emplace_back(ins[i]);
               if (!found_non_empty && !C_ins_wrappers.back().empty()) {
                 is_bytes = C_ins_wrappers.back().is_bytes();
@@ -1236,13 +1256,12 @@ PYBIND11_MODULE(_sentencepiece, m, py::mod_gil_not_used()) {
               }
               C_ins[i] = C_ins_wrappers.back().views();
             }
-            std::vector<std::string> outs(ins.size());
-            WorkerPool pool(num_threads, thread_pool, ins.size());
+            std::vector<std::string> outs(n);
+            WorkerPool pool(num_threads, thread_pool, n);
             {
               py::gil_scoped_release release;
               auto status = sentencepiece::RunBatch(
-                  ins.size(),
-                  [&](size_t i) { return self.Decode(C_ins[i], &outs[i]); },
+                  n, [&](size_t i) { return self.Decode(C_ins[i], &outs[i]); },
                   *pool.get());
               if (!status.ok()) throw status;
             }
@@ -1257,21 +1276,23 @@ PYBIND11_MODULE(_sentencepiece, m, py::mod_gil_not_used()) {
           "_DecodePiecesAsBytesBatch",
           [](const sentencepiece::SentencePieceProcessor& self,
              const py::sequence& ins, int num_threads, py::object thread_pool) {
-            if (ins.empty()) return py::list();
+            // Read the size once while holding the GIL. ins.size() calls
+            // __len__, which may run Python code and return a different value.
+            const size_t n = ins.size();
+            if (n == 0) return py::list();
             std::vector<PyListStringViewVector> C_ins_wrappers;
-            C_ins_wrappers.reserve(ins.size());
-            std::vector<absl::Span<const absl::string_view>> C_ins(ins.size());
-            for (size_t i = 0; i < ins.size(); ++i) {
+            C_ins_wrappers.reserve(n);
+            std::vector<absl::Span<const absl::string_view>> C_ins(n);
+            for (size_t i = 0; i < n; ++i) {
               C_ins_wrappers.emplace_back(ins[i]);
               C_ins[i] = C_ins_wrappers.back().views();
             }
-            std::vector<std::string> outs(ins.size());
-            WorkerPool pool(num_threads, thread_pool, ins.size());
+            std::vector<std::string> outs(n);
+            WorkerPool pool(num_threads, thread_pool, n);
             {
               py::gil_scoped_release release;
               auto status = sentencepiece::RunBatch(
-                  ins.size(),
-                  [&](size_t i) { return self.Decode(C_ins[i], &outs[i]); },
+                  n, [&](size_t i) { return self.Decode(C_ins[i], &outs[i]); },
                   *pool.get());
               if (!status.ok()) throw status;
             }
@@ -1285,20 +1306,23 @@ PYBIND11_MODULE(_sentencepiece, m, py::mod_gil_not_used()) {
           "_DecodePiecesAsSerializedProtoBatch",
           [](const sentencepiece::SentencePieceProcessor& self,
              const py::sequence& ins, int num_threads, py::object thread_pool) {
-            if (ins.empty()) return py::list();
+            // Read the size once while holding the GIL. ins.size() calls
+            // __len__, which may run Python code and return a different value.
+            const size_t n = ins.size();
+            if (n == 0) return py::list();
             std::vector<PyListStringViewVector> C_ins_wrappers;
-            C_ins_wrappers.reserve(ins.size());
-            std::vector<absl::Span<const absl::string_view>> C_ins(ins.size());
-            for (size_t i = 0; i < ins.size(); ++i) {
+            C_ins_wrappers.reserve(n);
+            std::vector<absl::Span<const absl::string_view>> C_ins(n);
+            for (size_t i = 0; i < n; ++i) {
               C_ins_wrappers.emplace_back(ins[i]);
               C_ins[i] = C_ins_wrappers.back().views();
             }
-            std::vector<std::string> outs(ins.size());
-            WorkerPool pool(num_threads, thread_pool, ins.size());
+            std::vector<std::string> outs(n);
+            WorkerPool pool(num_threads, thread_pool, n);
             {
               py::gil_scoped_release release;
               auto status = sentencepiece::RunBatch(
-                  ins.size(),
+                  n,
                   [&](size_t i) {
                     sentencepiece::SentencePieceText spt;
                     auto s = self.Decode(C_ins[i], &spt);
@@ -1328,7 +1352,10 @@ PYBIND11_MODULE(_sentencepiece, m, py::mod_gil_not_used()) {
                    "Batch input must be a sequence of sequences or a 2D "
                    "integer array.");
              }
-             if (seq_ins.empty()) return py::list();
+             // Read the size once. seq_ins.size() calls __len__, which may run
+             // Python code and return a different value.
+             const size_t batch_size = seq_ins.size();
+             if (batch_size == 0) return py::list();
 
              bool is_pieces_batch = false;
              bool detected_bytes = false;
@@ -1338,7 +1365,7 @@ PYBIND11_MODULE(_sentencepiece, m, py::mod_gil_not_used()) {
              // information, so infer the element type from the first non-empty
              // inner sequence; otherwise a piece batch that starts with an
              // empty sequence would be decoded as an id batch.
-             for (size_t i = 0; i < seq_ins.size(); ++i) {
+             for (size_t i = 0; i < batch_size; ++i) {
                py::object seq = seq_ins[i];
                if (!py::isinstance<py::list>(seq) &&
                    !py::isinstance<py::tuple>(seq)) {
@@ -1361,7 +1388,6 @@ PYBIND11_MODULE(_sentencepiece, m, py::mod_gil_not_used()) {
                return_bytes = return_bytes || detected_bytes;
              }
 
-             const size_t batch_size = seq_ins.size();
              std::vector<sentencepiece::SentencePieceText> spts(batch_size);
              WorkerPool pool(num_threads, thread_pool, batch_size);
 
@@ -1385,6 +1411,9 @@ PYBIND11_MODULE(_sentencepiece, m, py::mod_gil_not_used()) {
              } else {
                std::vector<IntSpanOrVector> C_ins =
                    CastToVectorIntSpanOrVector(ins_obj);
+               if (C_ins.size() != batch_size) {
+                 throw py::value_error("Batch size changed during conversion.");
+               }
 
                {
                  py::gil_scoped_release release;
